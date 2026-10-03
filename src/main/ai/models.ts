@@ -45,17 +45,28 @@ export const DEFAULT_TASK_MODELS: Record<AiProviderId, TaskModels> = {
 const MODEL_CHOICES: Record<AiProviderId, string[]> = {
   // Claude Code 구독은 별칭(haiku/sonnet/opus)과 정식 ID 둘 다 받는다 — 목록은 정식 ID 로 통일
   claude_subscription: [
+    'claude-opus-5-5',
     'claude-fable-5-1',
+    'claude-sonnet-5-5',
     'claude-opus-5',
     'claude-sonnet-5',
     'claude-haiku-4-5-20251001'
   ],
-  api_key: ['claude-fable-5-1', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+  api_key: [
+    'claude-opus-5-5',
+    'claude-fable-5-1',
+    'claude-sonnet-5-5',
+    'claude-opus-5',
+    'claude-sonnet-5',
+    'claude-haiku-4-5-20251001'
+  ],
   codex_subscription: ['gpt-5.6', 'gpt-5.6-pro', 'gpt-5.1-codex-max', 'gpt-5.3-codex'],
   service_credit: [
     'claude-haiku-4-5-20251001',
     'claude-sonnet-5',
+    'claude-sonnet-5-5',
     'claude-opus-5',
+    'claude-opus-5-5',
     'claude-fable-5-1'
   ]
 }
