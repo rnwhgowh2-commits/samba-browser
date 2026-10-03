@@ -1,0 +1,50 @@
+{
+  "_설명": "소싱처별 로그인 상태 판별(markers)과 복구 전략(relogin). 비밀번호는 쓰지 않는다 — 네이버 소셜 로그인은 같은 프로필의 네이버 세션으로 '네이버 로그인'만 누른다. markers 는 요소 이름이 정확히 같을 때만 맞는다('~'로 시작하면 포함).",
+  "defaults": {
+    "profile": "default",
+    "budget": { "perDay": 6, "minGapMin": 30, "maxConsecutiveFails": 3 },
+    "checkTimeoutSec": 25
+  },
+  "sites": [
+    {
+      "id": "NAVER",
+      "label": "네이버",
+      "role": "naver",
+      "home": "https://www.naver.com/",
+      "markers": { "in": ["로그아웃"], "out": ["로그인", "NAVER 로그인"] },
+      "relogin": null
+    },
+    {
+      "id": "ABCmart",
+      "label": "ABC마트·그랜드스테이지",
+      "home": "https://www.a-rt.com/",
+      "markers": { "in": ["LOGOUT"], "out": ["LOGIN"] },
+      "needsNaver": true,
+      "relogin": { "type": "naver_direct", "url": "https://abcmart.a-rt.com/login/sns-login-popup?snsCode=10000" }
+    },
+    {
+      "id": "SSG",
+      "label": "SSG",
+      "home": "https://www.ssg.com/",
+      "markers": { "in": ["로그아웃"], "out": ["로그인"] },
+      "needsNaver": true,
+      "relogin": { "type": "naver_click", "loginUrl": "https://member.ssg.com/member/login.ssg", "text": "네이버 로그인" }
+    },
+    {
+      "id": "LOTTEON",
+      "label": "롯데ON",
+      "checkTimeoutSec": 45,
+      "home": "https://www.lotteon.com/p/display/main/lotteon",
+      "markers": { "in": ["로그아웃"], "out": ["로그인/회원가입"] },
+      "needsNaver": true,
+      "relogin": { "type": "naver_click", "loginUrl": "https://www.lotteon.com/p/member/login/common", "text": "네이버" }
+    },
+    {
+      "id": "MUSINSA",
+      "label": "무신사",
+      "home": "https://www.musinsa.com/main/musinsa/recommend?gf=A",
+      "markers": { "in": ["로그아웃"], "out": ["로그인 페이지로 이동"] },
+      "relogin": { "type": "vault_login", "loginUrl": "https://www.musinsa.com/auth/login" }
+    }
+  ]
+}
