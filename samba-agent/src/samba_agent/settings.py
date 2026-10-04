@@ -111,6 +111,30 @@ class Settings(BaseSettings):
         self.bridge_token = SecretStr(token)
         return self
 
+    @model_validator(mode='after')
+    def _wave_token_from_backend_env(self) -> 'Settings':
+        """삼바 내부 토큰을 따로 주지 않았으면, 같은 PC 삼바 백엔드의 .env(CS_INTERNAL_TOKEN)에서 실행 때 읽는다.
+
+        .env 에 복사하지 않는다. 삼바 주소가 이 PC(localhost)일 때만 읽는다 — 다른 서버로 이 토큰을 보내지 않게.
+        """
+        if self.wave_internal_token is not None and self.wave_internal_token.get_secret_value():
+            return self
+        host = self.wave_url.split('://', 1)[-1].split('/', 1)[0].split(':', 1)[0].lower()
+        if host not in ('localhost', '127.0.0.1'):
+            return self
+        default = r'C:\Users\rnwhg\Desktop\samba-wave-main\backend\.env'
+        path = Path(os.environ.get('SAMBA_BACKEND_ENV') or default)
+        try:
+            for line in path.read_text(encoding='utf-8').splitlines():
+                key, sep, value = line.partition('=')
+                token = value.strip().strip('"\'')
+                if sep and key.strip() == 'CS_INTERNAL_TOKEN' and token:
+                    self.wave_internal_token = SecretStr(token)
+                    break
+        except OSError:
+            pass
+        return self
+
     @property
     def export_target_list(self) -> tuple[str, ...]:
         return tuple(x.strip() for x in self.export_targets.split(',') if x.strip())

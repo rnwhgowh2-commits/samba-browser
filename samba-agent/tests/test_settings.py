@@ -65,3 +65,21 @@ def test_판정_산출물_위치는_설정_하나로_정해진다(monkeypatch, t
     assert default_report_dir() == DEFAULT_ROOT / 'ops' / 'reports'
     monkeypatch.setenv('SAMBA_REPORT_DIR', str(tmp_path / 'r'))
     assert default_report_dir() == tmp_path / 'r'
+
+
+def test_삼바_내부_토큰은_로컬일_때만_백엔드_env_에서_읽는다(monkeypatch, tmp_path):
+    monkeypatch.setenv('SAMBA_BRIDGE_TOKEN', 'ab' * 32)
+    env = tmp_path / 'backend.env'
+    env.write_text('X=1\nCS_INTERNAL_TOKEN="' + 'cd' * 12 + '"\n', encoding='utf-8')
+    monkeypatch.setenv('SAMBA_BACKEND_ENV', str(env))
+    monkeypatch.delenv('SAMBA_WAVE_INTERNAL_TOKEN', raising=False)
+
+    monkeypatch.setenv('SAMBA_WAVE_URL', 'http://localhost:28080')
+    s = load_settings(env_file=None)
+    assert s.wave_internal_token is not None and s.wave_internal_token.get_secret_value() == 'cd' * 12
+    assert 'cdcd' not in repr(s)
+
+    # 원격 서버로는 읽어 보내지 않는다
+    monkeypatch.setenv('SAMBA_WAVE_URL', 'https://api.samba-wave.co.kr')
+    s2 = load_settings(env_file=None)
+    assert s2.wave_internal_token is None
