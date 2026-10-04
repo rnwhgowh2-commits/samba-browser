@@ -3309,7 +3309,7 @@ class BuyerAgent(AgentBase):
                 '배송지 입력 검증에 실패했다' + (f': {mask_text(note[:80])}' if note else ''),
                 FailReason.UNKNOWN,
             )
-        self._fill_phone(applied)
+        self._fill_phone(applied, account)
         self._confirm_shipping(shipping, args)
         # 마스킹 규칙이 이름을 가리려면 라벨이 앞에 있어야 한다(ops.masking) — 라벨을 붙여서 가린다
         summary = f'수취인 {shipping.get("name", "")} · {shipping.get("address", "")}'
@@ -3408,7 +3408,7 @@ class BuyerAgent(AgentBase):
         self.note('배송지', '사무실 수령(기본 배송지 유지)')
         return True
 
-    def _fill_phone(self, applied: dict[str, object]) -> None:
+    def _fill_phone(self, applied: dict[str, object], account: str = '') -> None:
         """배송 연락처 — 스크립트가 비워 둔 전화 칸을 앱이 키마스터 신원정보로 채운다.
 
         번호는 하네스를 지나가지 않는다. 앱 결과는 성공이면 'ok…', 아니면 'refused: …'·'not found: …'.
@@ -3445,6 +3445,8 @@ class BuyerAgent(AgentBase):
                     elementId=field_id,
                     itemType=PHONE_SECRET_ITEM,
                     field=PHONE_SECRET_FIELD,
+                    # 배송지 팝업 탭은 프로필 단서가 없어 계정이 여럿이면 앱이 계정을 못 고른다(실측 2026-10-04)
+                    **({'accountLabel': account} if account else {}),
                     **({'format': fmt} if fmt else {}),
                 )
             except AgentFailure as e:
