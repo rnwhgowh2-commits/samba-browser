@@ -12,6 +12,7 @@
       "role": "naver",
       "home": "https://www.naver.com/",
       "markers": { "in": ["로그아웃"], "out": ["로그인", "NAVER 로그인"] },
+      "_relogin_보류": "2026-10-04 키마스터 계정 자동 로그인 1회 시험 실패(제출 후 로그인 화면에 머묾, 원인 미확인). 앱에는 '네이버는 값을 직접 넣는다(2026-09-25 계정 잠김)' 테스트가 있어 입력 방식을 바꾸지 않았다. 화면을 보며 1회 확인한 뒤 켠다. 켤 때: relogin={type:vault_login, loginUrl:https://nid.naver.com/nidlogin.login}, budget perDay 2·minGapMin 60·maxConsecutiveFails 2",
       "relogin": null
     },
     {

@@ -12,9 +12,10 @@
 //  - 네이버가 로그아웃이면 네이버 소셜 사이트 복구를 시도하지 않고 '네이버 필요'로 알린다.
 //  - 사이트마다 하루 시도 한도·최소 간격·연속 실패 중단을 둔다.
 //  - 점검·복구는 레인(lane)으로 돈다 — 사람이 쓰는 탭과 앱 화면(설정 등)에 상관없이 돈다.
-import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync, unlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
 import { call, health, sleep, BridgeDown, BridgeBusy } from './bridge.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -28,12 +29,21 @@ const DEF = cfg.defaults
 
 const now = () => Date.now()
 const stamp = () => new Date().toLocaleString('ko-KR', { hour12: false })
+// 콘솔은 사람이 터미널에서 돌릴 때만 쓴다. 숨김 실행(작업 스케줄러)에서는 콘솔이 막혀 있을 수 있어 파일에 먼저 쓰고,
+// 콘솔 출력은 실패해도 무시한다(KEEPER_STDOUT=1 이면 파이프에서도 출력)
+const TO_CONSOLE = Boolean(process.stdout.isTTY) || Boolean(process.env.KEEPER_STDOUT)
+function say(...args) {
+  if (!TO_CONSOLE) return
+  try {
+    console.log(...args)
+  } catch {}
+}
 function log(msg) {
   const line = `[${stamp()}] ${msg}`
-  console.log(line)
   try {
     appendFileSync(LOG_FILE, line + '\n')
   } catch {}
+  say(line)
 }
 
 // --- 상태 파일 --------------------------------------------------------------
@@ -240,6 +250,18 @@ async function reloginVault(site) {
     } catch {}
     if (tabs.length && tabs.every((t) => !/login|signin/i.test(t.url || ''))) break
   }
+  // 네이버는 로그인 화면에 머물면 캡차·새 기기 인증·보호조치 가능성이 크다 — 더 누르지 않고 사람에게 넘긴다
+  if (site.role === 'naver') {
+    let stuck = false
+    try {
+      const tabs = JSON.parse(await call('list_tabs', {}, { lane }))
+      stuck = tabs.some((t) => /nid\.naver\.com/i.test(t.url || ''))
+    } catch {}
+    if (stuck) {
+      await closeLaneTabs(lane)
+      return { ok: false, reason: '네이버 로그인 화면에 머묾(캡차·추가 인증·보호조치 가능) — 사람 확인 필요' }
+    }
+  }
   await closeLaneTabs(lane)
   return { ok: true }
 }
@@ -274,7 +296,83 @@ function canAttempt(site, ss) {
 }
 
 // --- 한 번 점검 ------------------------------------------------------------
-async function checkOnce({ only, dry = false } = {}) {
+
+// 앱 창이 최소화돼 있으면 페이지가 응답하지 않는다(실측 2026-10-04) — 점검 전에 포커스를 뺏지 않고 복원한다(SW_SHOWNOACTIVATE)
+const RESTORE_PS = `
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public class KW { [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int n); }
+"@
+$p = Get-Process electron -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*samba-browser*' -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+if ($p -and [KW]::IsIconic($p.MainWindowHandle)) { [KW]::ShowWindow($p.MainWindowHandle, 4) | Out-Null; 'restored' } else { 'ok' }
+`
+function ensureAppWindow() {
+  try {
+    const r = execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', RESTORE_PS], { encoding: 'utf8', windowsHide: true, timeout: 20_000 }).trim()
+    if (r === 'restored') log('앱 창이 최소화돼 있어 복원함(포커스는 가져오지 않음)')
+  } catch {}
+}
+
+// 점검은 한 번에 하나만 돈다 — 두 점검이 같은 레인 탭을 서로 닫아 전부 '판정 불가'가 되는 것을 막는다(실측 2026-10-04)
+const CHECK_LOCK = join(DATA_DIR, 'check.lock')
+const CHECK_LOCK_STALE_MS = 20 * 60_000
+async function acquireCheckLock(waitMs = 25 * 60_000) {
+  const t0 = now()
+  for (;;) {
+    try {
+      writeFileSync(CHECK_LOCK, `${process.pid} ${now()}`, { flag: 'wx' })
+      return () => {
+        try {
+          const cur = readFileSync(CHECK_LOCK, 'utf8')
+          if (cur.startsWith(`${process.pid} `)) writeFileSync(CHECK_LOCK, '')
+        } catch {}
+      }
+    } catch {
+      let stale = false
+      try {
+        const cur = readFileSync(CHECK_LOCK, 'utf8').trim()
+        if (!cur) stale = true
+        else {
+          const [pid, ts] = cur.split(' ').map(Number)
+          let alive = true
+          try {
+            process.kill(pid, 0)
+          } catch {
+            alive = false
+          }
+          stale = !alive || now() - ts > CHECK_LOCK_STALE_MS
+        }
+      } catch {
+        stale = true
+      }
+      if (stale) {
+        try {
+          writeFileSync(CHECK_LOCK, '')
+          require_unlink()
+        } catch {}
+        continue
+      }
+      if (now() - t0 > waitMs) throw new Error('다른 점검이 끝나지 않아 건너뜀')
+      await sleep(5000)
+    }
+  }
+}
+function require_unlink() {
+  try {
+    unlinkSync(CHECK_LOCK)
+  } catch {}
+}
+async function checkOnce(opts = {}) {
+  const release = await acquireCheckLock()
+  try {
+    ensureAppWindow()
+    return await checkOnceInner(opts)
+  } finally {
+    release()
+  }
+}
+
+async function checkOnceInner({ only, dry = false } = {}) {
   const st = loadState()
   const tools = await health().catch((e) => {
     throw e
@@ -304,6 +402,7 @@ async function checkOnce({ only, dry = false } = {}) {
     // 로딩이 느려서 판정 못 한 경우 한 번 더 본다(복구 오발동은 막고, 일시 지연은 흡수한다)
     if (p.verdict === 'unknown') {
       log(`[${site.id}] 판정 불가 — 한 번 더 확인`)
+      ensureAppWindow()
       try {
         p = await probeSignedIn(site)
       } catch (e) {
@@ -357,6 +456,7 @@ async function checkOnce({ only, dry = false } = {}) {
               ss.fails = 0
               ss.lastOkAt = now()
               ss.lastReloginAt = now()
+              if (site.role === 'naver') naverIn = true // 이제 네이버 소셜 사이트 복구가 가능하다
               log(`[${site.id}] 복구 성공`)
             } else {
               ss.fails += 1
@@ -383,15 +483,15 @@ async function checkOnce({ only, dry = false } = {}) {
 // --- 출력 ------------------------------------------------------------------
 function printStatus(st = loadState()) {
   const icon = { in: '🟢 로그인', out: '🔴 로그아웃', needs_naver: '🟠 네이버 필요', unknown: '⚪ 판정불가' }
-  console.log(`\n세션 상태 (마지막 점검 ${st.updatedAt ? new Date(st.updatedAt).toLocaleString('ko-KR', { hour12: false }) : '없음'})`)
+  say(`\n세션 상태 (마지막 점검 ${st.updatedAt ? new Date(st.updatedAt).toLocaleString('ko-KR', { hour12: false }) : '없음'})`)
   for (const s of cfg.sites) {
     const x = st.sites[s.id]
     if (!x) {
-      console.log(`  ${s.label.padEnd(16)} 점검 기록 없음`)
+      say(`  ${s.label.padEnd(16)} 점검 기록 없음`)
       continue
     }
     const ago = x.checkedAt ? `${Math.round((now() - x.checkedAt) / 60000)}분 전` : '-'
-    console.log(
+    say(
       `  ${s.label.padEnd(16)} ${(icon[x.status] ?? x.status).padEnd(12)} 점검 ${ago.padEnd(7)} 24h복구 ${x.attempts?.length ?? 0}회 실패누적 ${x.fails}${x.detail ? ' · ' + x.detail : ''}`
     )
   }
@@ -447,6 +547,30 @@ async function main() {
     process.exit(ok ? 0 : 1)
   }
   if (cmd === 'watch') {
+    // 중복 실행 방지 — 같은 계정에 복구가 겹치지 않게 한 개만 돈다
+    const lockFile = join(DATA_DIR, 'watch.lock')
+    try {
+      const pid = Number(readFileSync(lockFile, 'utf8'))
+      if (pid && pid !== process.pid) {
+        try {
+          process.kill(pid, 0)
+          log(`이미 실행 중(pid ${pid}) — 종료`)
+          process.exit(0)
+        } catch {
+          /* 죽은 잠금 — 이어서 쓴다 */
+        }
+      }
+    } catch {}
+    writeFileSync(lockFile, String(process.pid))
+    const unlock = () => {
+      try {
+        if (readFileSync(lockFile, 'utf8') === String(process.pid)) writeFileSync(lockFile, '')
+      } catch {}
+    }
+    process.on('exit', unlock)
+    process.on('SIGINT', () => process.exit(0))
+    process.on('SIGTERM', () => process.exit(0))
+    log(`세션 관리자 시작(pid ${process.pid})`)
     const base = Number(opt('--interval') ?? 15)
     for (;;) {
       try {
@@ -459,7 +583,7 @@ async function main() {
       await sleep(Math.max(60_000, wait))
     }
   }
-  console.log('사용: node keeper.mjs once|watch|status|test-relogin [--site ID] [--dry] [--interval 분]')
+  say('사용: node keeper.mjs once|watch|status|test-relogin [--site ID] [--dry] [--interval 분]')
 }
 
 main().catch((e) => {

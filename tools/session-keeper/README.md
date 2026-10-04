@@ -35,3 +35,11 @@ node keeper.mjs test-relogin --site ID       (시험) 로그아웃 → 복구 �
 - 롯데ON·SSG 는 홈이 느리게 떠서 25초를 넘길 수 있다 → 판정 불가면 한 번 더 확인하고, 그래도 불가면 건드리지 않는다.
 - `find_elements` 는 부분일치라 페이지 전체를 감싼 긴 clickable 이 같이 나온다 → 버튼·링크 중 이름이 짧은 것을 고른다.
 - `login` 도구의 정상 응답 `submitted: check the page for success or captcha/2FA` 에 captcha 가 들어 있다 → 글자로 오판하지 말고 재확인으로 가린다.
+
+## 데이터 폴더 주의(실측 2026-10-04)
+Claude 데스크톱 앱 안에서 띄운 프로세스는 `%APPDATA%` 쓰기가 가상 폴더(`...\Packages\Claude_*\LocalCache\Roaming`)로 간다.
+작업 스케줄러·바탕화면 바로가기는 실제 폴더를 쓴다. **앱은 항상 바탕화면 바로가기(또는 작업 스케줄러)로 켜서 실제 폴더 한 곳만 쓰게 한다.**
+`_ops/run-real.ps1` 은 스크립트를 작업 스케줄러(실제 컨텍스트)로 한 번 돌리고 결과 파일을 기다린다.
+
+## 앱 창이 최소화되면 페이지가 응답하지 않는다
+점검 직전 `ensureAppWindow()` 가 최소화된 창을 포커스 없이 복원한다. 점검은 `check.lock` 으로 한 번에 하나만 돈다.
