@@ -154,6 +154,35 @@ async function probeAfterRelogin(site, tries = 3) {
   return p
 }
 
+/**
+ * 로그인된 계정이 의도한 계정인지 확인한다(여러 계정을 프로필로 나눌 때 필수 — 다른 계정으로 로그인된 채 쓰이는 사고 방지).
+ * site.identity = { url, pattern(정규식 문자열, 첫 그룹이 아이디) }. 기대 아이디는 relogin.accountLabel(= 키마스터 라벨).
+ * 값은 로그에 앞 3글자와 길이만 남긴다. 판단 못 하면 'unknown'(건드리지 않음)
+ */
+async function probeIdentity(site) {
+  if (!site.identity) return { verdict: 'skip' }
+  const lane = laneOf(site)
+  const expected = String(site.relogin?.accountLabel ?? '').trim().toLowerCase()
+  if (!expected) return { verdict: 'skip' }
+  await closeLaneTabs(lane)
+  const r = await call('new_tab', { url: site.identity.url, profile: site.profile ?? DEF.profile }, { lane })
+  const tabId = tabIdOf(r)
+  let got = ''
+  try {
+    for (let i = 0; i < 4 && !got; i++) {
+      await sleep(i === 0 ? 5000 : 3000)
+      const txt = await call('get_page', {}, { lane })
+      const m = new RegExp(site.identity.pattern).exec(txt)
+      if (m) got = m[1].trim().toLowerCase()
+    }
+  } finally {
+    if (tabId) await call('close_tab', { id: tabId }, { lane }).catch(() => {})
+  }
+  if (!got) return { verdict: 'unknown' }
+  const ok = got === expected || expected.endsWith('_' + got)
+  return { verdict: ok ? 'match' : 'mismatch', mask: `${got.slice(0, 3)}***(${got.length}자)`, wantMask: `${expected.slice(0, 3)}***(${expected.length}자)` }
+}
+
 // --- 복구 전략 -------------------------------------------------------------
 const NAVER_BLOCK_URL = /nid\.naver\.com\/(nidlogin|login|user2|oauth2\.0\/authorize|login\/ext|captcha)/i
 
@@ -428,6 +457,23 @@ async function checkOnceInner({ only, dry = false } = {}) {
     ss.checkedAt = now()
     if (site.role === 'naver') naverIn = p.verdict === 'in' ? true : p.verdict === 'out' ? false : null
 
+    if (p.verdict === 'in' && site.identity) {
+      const idr = await probeIdentity(site)
+      if (idr.verdict === 'mismatch') {
+        ss.status = 'wrong_account'
+        ss.detail = `계정 불일치 — 로그인된 ${idr.mask}, 기대 ${idr.wantMask} (사람 확인 필요, 자동 조치 안 함)`
+        log(`[${site.id}] ${ss.detail}`)
+        saveState(st)
+        continue
+      }
+      if (idr.verdict === 'unknown') {
+        ss.status = 'unknown'
+        ss.detail = '로그인은 됐으나 계정 확인 불가(건드리지 않음)'
+        log(`[${site.id}] ${ss.detail}`)
+        saveState(st)
+        continue
+      }
+    }
     if (p.verdict === 'in') {
       if (ss.status !== 'in') log(`[${site.id}] 로그인 상태 확인`)
       ss.status = 'in'
@@ -466,6 +512,10 @@ async function checkOnceInner({ only, dry = false } = {}) {
               ss.status = 'unknown'
               ss.detail = '복구 후 확인 지연(다음 점검에서 재확인)'
               log(`[${site.id}] ${ss.detail}`)
+            } else if (again.verdict === 'in' && site.identity && (await probeIdentity(site)).verdict === 'mismatch') {
+              ss.status = 'wrong_account'
+              ss.detail = '복구 후 다른 계정으로 로그인됨 — 사람 확인 필요'
+              log(`[${site.id}] ${ss.detail}`)
             } else if (again.verdict === 'in') {
               ss.status = 'in'
               ss.detail = '복구됨'
@@ -498,7 +548,7 @@ async function checkOnceInner({ only, dry = false } = {}) {
 
 // --- 출력 ------------------------------------------------------------------
 function printStatus(st = loadState()) {
-  const icon = { in: '🟢 로그인', out: '🔴 로그아웃', needs_naver: '🟠 네이버 필요', unknown: '⚪ 판정불가' }
+  const icon = { in: '🟢 로그인', out: '🔴 로그아웃', needs_naver: '🟠 네이버 필요', unknown: '⚪ 판정불가', wrong_account: '🟣 계정불일치' }
   say(`\n세션 상태 (마지막 점검 ${st.updatedAt ? new Date(st.updatedAt).toLocaleString('ko-KR', { hour12: false }) : '없음'})`)
   for (const s of cfg.sites) {
     const x = st.sites[s.id]
@@ -570,14 +620,20 @@ async function main() {
     const base = cfg.sites.find((x) => (x.baseId ?? x.id) === opt('--site'))
     if (!base) throw new Error('--site 로 사이트 ID 를 주세요(예: MUSINSA)')
     const lane = 'keeper-setup'
+    ensureAppWindow()
     await closeLaneTabs(lane)
     await call('new_tab', { url: base.home }, { lane })
-    await sleep(8000)
-    const raw = await call('list_accounts', {}, { lane })
+    let raw = ''
+    for (let i = 0; i < 6; i++) {
+      await sleep(5000)
+      raw = await call('list_accounts', {}, { lane })
+      if (!/host unknown/.test(raw)) break
+    }
     await closeLaneTabs(lane)
     let list = []
     try {
-      list = JSON.parse(raw)
+      const parsed = JSON.parse(raw)
+      list = Array.isArray(parsed) ? parsed : (parsed.accounts ?? [])
     } catch {}
     const labels = [...new Set(list.map((a) => a.label).filter(Boolean))]
     if (!labels.length) throw new Error('키마스터에서 이 사이트 계정을 찾지 못함: ' + raw.slice(0, 120))

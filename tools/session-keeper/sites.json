@@ -2,7 +2,11 @@
   "_설명": "소싱처별 로그인 상태 판별(markers)과 복구 전략(relogin). 비밀번호는 쓰지 않는다 — 네이버 소셜 로그인은 같은 프로필의 네이버 세션으로 '네이버 로그인'만 누른다. markers 는 요소 이름이 정확히 같을 때만 맞는다('~'로 시작하면 포함).",
   "defaults": {
     "profile": "default",
-    "budget": { "perDay": 6, "minGapMin": 30, "maxConsecutiveFails": 3 },
+    "budget": {
+      "perDay": 6,
+      "minGapMin": 30,
+      "maxConsecutiveFails": 3
+    },
     "checkTimeoutSec": 25
   },
   "sites": [
@@ -11,7 +15,15 @@
       "label": "네이버",
       "role": "naver",
       "home": "https://www.naver.com/",
-      "markers": { "in": ["로그아웃"], "out": ["로그인", "NAVER 로그인"] },
+      "markers": {
+        "in": [
+          "로그아웃"
+        ],
+        "out": [
+          "로그인",
+          "NAVER 로그인"
+        ]
+      },
       "_relogin_보류": "2026-10-04 키마스터 계정 자동 로그인 1회 시험 실패(제출 후 로그인 화면에 머묾, 원인 미확인). 앱에는 '네이버는 값을 직접 넣는다(2026-09-25 계정 잠김)' 테스트가 있어 입력 방식을 바꾸지 않았다. 화면을 보며 1회 확인한 뒤 켠다. 켤 때: relogin={type:vault_login, loginUrl:https://nid.naver.com/nidlogin.login}, budget perDay 2·minGapMin 60·maxConsecutiveFails 2",
       "relogin": null
     },
@@ -19,33 +31,134 @@
       "id": "ABCmart",
       "label": "ABC마트·그랜드스테이지",
       "home": "https://www.a-rt.com/",
-      "markers": { "in": ["LOGOUT"], "out": ["LOGIN"] },
+      "markers": {
+        "in": [
+          "LOGOUT"
+        ],
+        "out": [
+          "LOGIN"
+        ]
+      },
       "needsNaver": true,
-      "relogin": { "type": "naver_direct", "url": "https://abcmart.a-rt.com/login/sns-login-popup?snsCode=10000" }
+      "relogin": {
+        "type": "naver_direct",
+        "url": "https://abcmart.a-rt.com/login/sns-login-popup?snsCode=10000"
+      }
     },
     {
       "id": "SSG",
       "label": "SSG",
       "home": "https://www.ssg.com/",
-      "markers": { "in": ["로그아웃"], "out": ["로그인"] },
+      "markers": {
+        "in": [
+          "로그아웃"
+        ],
+        "out": [
+          "로그인"
+        ]
+      },
       "needsNaver": true,
-      "relogin": { "type": "naver_click", "loginUrl": "https://member.ssg.com/member/login.ssg", "text": "네이버 로그인" }
+      "relogin": {
+        "type": "naver_click",
+        "loginUrl": "https://member.ssg.com/member/login.ssg",
+        "text": "네이버 로그인"
+      }
     },
     {
       "id": "LOTTEON",
       "label": "롯데ON",
       "checkTimeoutSec": 45,
       "home": "https://www.lotteon.com/p/display/main/lotteon",
-      "markers": { "in": ["로그아웃"], "out": ["로그인/회원가입"] },
+      "markers": {
+        "in": [
+          "로그아웃"
+        ],
+        "out": [
+          "로그인/회원가입"
+        ]
+      },
       "needsNaver": true,
-      "relogin": { "type": "naver_click", "loginUrl": "https://www.lotteon.com/p/member/login/common", "text": "네이버" }
+      "relogin": {
+        "type": "naver_click",
+        "loginUrl": "https://www.lotteon.com/p/member/login/common",
+        "text": "네이버"
+      }
     },
     {
       "id": "MUSINSA",
       "label": "무신사",
       "home": "https://www.musinsa.com/main/musinsa/recommend?gf=A",
-      "markers": { "in": ["로그아웃"], "out": ["로그인 페이지로 이동"] },
-      "relogin": { "type": "vault_login", "loginUrl": "https://www.musinsa.com/auth/login" }
+      "markers": {
+        "in": [
+          "로그아웃"
+        ],
+        "out": [
+          "로그인 페이지로 이동"
+        ]
+      },
+      "relogin": {
+        "type": "vault_login",
+        "loginUrl": "https://www.musinsa.com/auth/login"
+      },
+      "accounts": [
+        {
+          "profile": "musinsa-1",
+          "accountLabel": "무신사_rnwhgowh"
+        },
+        {
+          "profile": "musinsa-2",
+          "accountLabel": "cdhking00"
+        },
+        {
+          "profile": "musinsa-3",
+          "accountLabel": "rnwhgowh1"
+        },
+        {
+          "profile": "musinsa-4",
+          "accountLabel": "rnwhgowh2"
+        },
+        {
+          "profile": "musinsa-5",
+          "accountLabel": "rnwhgowh3"
+        },
+        {
+          "profile": "musinsa-6",
+          "accountLabel": "rnwhgowh4"
+        },
+        {
+          "profile": "musinsa-7",
+          "accountLabel": "rossnehd"
+        },
+        {
+          "profile": "musinsa-8",
+          "accountLabel": "soyoon1627"
+        },
+        {
+          "profile": "musinsa-9",
+          "accountLabel": "sukga01"
+        },
+        {
+          "profile": "musinsa-10",
+          "accountLabel": "topminn12"
+        },
+        {
+          "profile": "musinsa-11",
+          "accountLabel": "whdtn111"
+        },
+        {
+          "profile": "musinsa-12",
+          "accountLabel": "yangstrong"
+        }
+      ],
+      "identity": {
+        "url": "https://my.musinsa.com/api2/member/v1/my-info",
+        "pattern": "\"memberId\"\\s*:\\s*\"([^\"]+)\""
+      },
+      "budget": {
+        "perDay": 4,
+        "minGapMin": 120,
+        "maxConsecutiveFails": 2
+      }
     }
   ]
 }

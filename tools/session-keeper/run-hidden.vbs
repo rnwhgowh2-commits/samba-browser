@@ -11,6 +11,6 @@ If Not fso.FolderExists(dataDir) Then
   fso.CreateFolder dataDir
   On Error GoTo 0
 End If
-cmd = "cmd.exe /c """"C:\Program Files\nodejs\node.exe"" """ & here & "\keeper.mjs"" watch >> """ & dataDir & "\stdio.txt"" 2>&1"""
+cmd = "cmd.exe /c """"C:\Program Files\nodejs\node.exe"" """ & here & "\keeper.mjs"" watch --interval 30 >> """ & dataDir & "\stdio.txt"" 2>&1"""
 sh.CurrentDirectory = here
 sh.Run cmd, 0, False
