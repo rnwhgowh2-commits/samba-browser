@@ -12,7 +12,7 @@ export interface SettingsSectionDef {
 
 /**
  * 설정에는 "다른 화면에 이미 있는 것"을 두지 않는다.
- *   개인     일반 · 모양 · 계정 · 보안 · 키마스터
+ *   개인     일반 · 모양 · 계정 · 보안 · 키마스터 · 결제
  *   AI       동작 · AI 연결 · 자동화 · 폰 · 알림 연동
  * (키마스터·자동화는 2026-09-19, 폰은 2026-09-21 사이드바에서 설정 안으로 옮겼다 — 사이드바를 얇게)
  *
@@ -30,6 +30,7 @@ export const SECTIONS: readonly SettingsSectionDef[] = [
   { group: 'personal', key: 'account', labelKey: 'settingsPage.sections.account' },
   { group: 'personal', key: 'security', labelKey: 'settingsPage.sections.security' },
   { group: 'personal', key: 'keymaster', labelKey: 'settingsPage.sections.keymaster' },
+  { group: 'personal', key: 'payments', labelKey: 'settingsPage.sections.payments' },
   { group: 'agent', key: 'behavior', labelKey: 'settingsPage.sections.behavior' },
   { group: 'agent', key: 'ai', labelKey: 'settingsPage.sections.ai' },
   { group: 'agent', key: 'automation', labelKey: 'settingsPage.sections.automation' },
@@ -38,7 +39,12 @@ export const SECTIONS: readonly SettingsSectionDef[] = [
 ]
 
 /** 자체 레이아웃(두 칸·자체 스크롤)을 가진 섹션 — 설정의 560px 폭 틀 없이 그린다 */
-export const FULL_WIDTH_SECTION_KEYS: readonly string[] = ['keymaster', 'automation', 'phones']
+export const FULL_WIDTH_SECTION_KEYS: readonly string[] = [
+  'keymaster',
+  'payments',
+  'automation',
+  'phones'
+]
 
 export function isFullWidthSection(key: string): boolean {
   return FULL_WIDTH_SECTION_KEYS.includes(key)

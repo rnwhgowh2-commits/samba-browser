@@ -11,6 +11,7 @@ import { AiSection } from '@renderer/components/settings/AiSection'
 import { NotifySection } from '@renderer/components/settings/NotifySection'
 import { PlaceholderSection } from '@renderer/components/settings/PlaceholderSection'
 import { PhonesPage } from '@renderer/pages/PhonesPage'
+import { PayBlocksSection } from '@renderer/components/vault/PayBlocksSection'
 import { PersonalInfoPage } from '@renderer/pages/PersonalInfoPage'
 import { AutomationPage } from '@renderer/pages/AutomationPage'
 import {
@@ -138,6 +139,8 @@ function SectionBody({
       return <AiSection />
     case 'keymaster':
       return <PersonalInfoPage />
+    case 'payments':
+      return <PayBlocksSection />
     case 'automation':
       return <AutomationPage />
     case 'phones':

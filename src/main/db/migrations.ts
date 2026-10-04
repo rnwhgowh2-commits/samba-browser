@@ -147,5 +147,17 @@ export const migrations: Migration[] = [
     tag: '0010_auth_events_pay_method',
     optional: true,
     sql: ['ALTER TABLE `auth_events` ADD `pay_method` text;']
+  },
+  {
+    // 결제 수단 블록 — 계정에 끼운 전역 항목 연결(순서 포함)과 소싱처×수단 지원 상태.
+    // 둘 다 PC 로컬 전용이다. 없어도 앱이 돌도록 optional 이고, 읽는 쪽은 표가 없으면 빈 값으로 본다
+    tag: '0011_pay_blocks',
+    optional: true,
+    sql: [
+      'CREATE TABLE IF NOT EXISTS `pay_block_links` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`account_id` integer NOT NULL,\n\t`item_id` integer NOT NULL,\n\t`position` integer DEFAULT 0 NOT NULL,\n\t`created_at` integer NOT NULL\n);',
+      'CREATE UNIQUE INDEX IF NOT EXISTS `pay_block_links_unique` ON `pay_block_links` (`account_id`,`item_id`);',
+      'CREATE TABLE IF NOT EXISTS `pay_support` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`site_key` text NOT NULL,\n\t`kind` text NOT NULL,\n\t`status` text NOT NULL,\n\t`verified_at` integer,\n\t`updated_at` integer NOT NULL\n);',
+      'CREATE UNIQUE INDEX IF NOT EXISTS `pay_support_unique` ON `pay_support` (`site_key`,`kind`);'
+    ]
   }
 ]

@@ -1,12 +1,23 @@
 // 금고 저장소 — drizzle 쿼리만 담당한다(암호화·상태 판단은 service.ts).
 // sql.js 드라이버는 동기이므로 .all()/.get()/.run() 을 그대로 쓴다.
 
-import { eq, and, or, isNull, desc, type SQL } from 'drizzle-orm'
+import { eq, and, or, isNull, desc, inArray, type SQL } from 'drizzle-orm'
 import type { Db } from '../db/client'
 import { tr } from '../i18n'
-import { sites, accounts, vaultItems, vaultMeta, auditLog } from '../db/schema'
+import {
+  sites,
+  accounts,
+  vaultItems,
+  vaultMeta,
+  auditLog,
+  payBlockLinks,
+  paySupport
+} from '../db/schema'
 import type {
   AgentAccess,
+  PayBlockKind,
+  PayLinkDto,
+  PaySupportDto,
   PaymentProvider,
   SiteDto,
   VaultItemMeta,
@@ -15,6 +26,7 @@ import type {
 import {
   normalizeAgentAccess,
   normalizeItemType,
+  normalizePaySupportStatus,
   paymentProviderOfSections
 } from '../../shared/vault'
 import type { WorkspaceScope } from '../../shared/sync'
@@ -29,6 +41,14 @@ export interface VaultItemRow {
   // 섹션>필드 구조. secret 필드의 암호문이 여기 들어 있다
   sections: StoredSection[]
   updatedAt: number
+}
+
+// 결제 비밀번호 조회 옵션. 기본은 계정 자신의 항목 + 끼운 블록 전부다.
+// includeLinked=false 면 계정 자신의 항목만(저장 대상 탐색용 — 공유 블록을 덮어쓰면 안 된다),
+// linkedAllowed 를 주면 끼운 블록 중 그것을 통과한 것만 센다(실제 값 채우기 — 검증된 블록만)
+export interface PaymentLookupOptions {
+  includeLinked?: boolean
+  linkedAllowed?: (row: VaultItemRow) => boolean
 }
 
 // 결제 비밀번호 조회 결과. 못 찾은 이유를 호출부가 구분할 수 있게 담는다
@@ -321,6 +341,13 @@ export class VaultRepo {
       if (!list.includes(type)) list.push(type)
       map.set(row.accountId, list)
     }
+    // 끼워 둔 결제 수단 블록(전역 항목)도 그 계정이 가진 종류로 센다
+    const linkedTypes = this.linkedItemTypes()
+    for (const [accountId, types] of linkedTypes) {
+      const list = map.get(accountId) ?? []
+      for (const t of types) if (!list.includes(t)) list.push(t)
+      map.set(accountId, list)
+    }
     return map
   }
 
@@ -411,9 +438,188 @@ export class VaultRepo {
     return row ? toItemRow(row) : null
   }
 
-  /** 계정에 딸린 결제 비밀번호('password') 항목 전부. 저장 순서(id)를 그대로 지킨다 */
-  listPaymentItemRows(accountId: number): VaultItemRow[] {
-    return this.d
+  // --- 결제 수단 블록(연결·지원 표) --------------------------------------------
+  // 두 표는 optional 마이그레이션이라 없을 수 있다 — 읽기는 빈 값으로, 쓰기는 호출부가 오류를 본다
+
+  private safeRead<T>(fn: () => T, fallback: T): T {
+    try {
+      return fn()
+    } catch {
+      return fallback
+    }
+  }
+
+  /**
+   * 연결 목록(계정 → 순서 → id). accountId 를 주면 그 계정 것만.
+   * 읽기 전용 호출은 표가 없어도 빈 목록으로 본다. 쓰기 전에 현재 상태를 읽을 때는 strict 로 불러
+   * 표가 없으면 오류가 호출부까지 가게 한다(조용히 아무것도 안 하고 성공으로 끝나지 않게)
+   */
+  listPayLinks(accountId?: number, strict = false): PayLinkDto[] {
+    const read = (): PayLinkDto[] =>
+      this.d
+        .select()
+        .from(payBlockLinks)
+        .where(accountId === undefined ? undefined : eq(payBlockLinks.accountId, accountId))
+        .orderBy(payBlockLinks.accountId, payBlockLinks.position, payBlockLinks.id)
+        .all()
+        .map((r) => ({ accountId: r.accountId, itemId: r.itemId, position: r.position }))
+    return strict ? read() : this.safeRead(read, [])
+  }
+
+  /** 이 계정에 끼운 블록 중 이 종류의 전역 항목(연결 순서). 지워졌거나 전역이 아닌 항목은 건너뛴다 */
+  linkedItemRows(accountId: number, type: VaultItemType): VaultItemRow[] {
+    const links = this.listPayLinks(accountId)
+    if (links.length === 0) return []
+    const rows = this.d
+      .select()
+      .from(vaultItems)
+      .where(
+        and(
+          inArray(
+            vaultItems.id,
+            links.map((l) => l.itemId)
+          ),
+          isNull(vaultItems.accountId),
+          eq(vaultItems.type, type),
+          isNull(vaultItems.deletedAt)
+        )
+      )
+      .all()
+      .map(toItemRow)
+    const byId = new Map(rows.map((r) => [r.id, r]))
+    return links.flatMap((l) => {
+      const row = byId.get(l.itemId)
+      return row ? [row] : []
+    })
+  }
+
+  /** 계정별로 끼워 둔 블록의 항목 종류(비밀값 없음) */
+  linkedItemTypes(): Map<number, VaultItemType[]> {
+    const links = this.listPayLinks()
+    const map = new Map<number, VaultItemType[]>()
+    if (links.length === 0) return map
+    const rows = this.d
+      .select({ id: vaultItems.id, type: vaultItems.type })
+      .from(vaultItems)
+      .where(
+        and(
+          inArray(
+            vaultItems.id,
+            links.map((l) => l.itemId)
+          ),
+          isNull(vaultItems.accountId),
+          isNull(vaultItems.deletedAt)
+        )
+      )
+      .all()
+    const typeById = new Map(rows.map((r) => [r.id, normalizeItemType(r.type)]))
+    for (const l of links) {
+      const type = typeById.get(l.itemId)
+      if (!type) continue
+      const list = map.get(l.accountId) ?? []
+      if (!list.includes(type)) list.push(type)
+      map.set(l.accountId, list)
+    }
+    return map
+  }
+
+  /** 계정에 블록을 끼운다(맨 뒤 순서). 이미 끼워져 있으면 false */
+  addPayLink(accountId: number, itemId: number, now: number): boolean {
+    const existing = this.d
+      .select()
+      .from(payBlockLinks)
+      .where(and(eq(payBlockLinks.accountId, accountId), eq(payBlockLinks.itemId, itemId)))
+      .all()
+    if (existing.length > 0) return false
+    const last = this.listPayLinks(accountId, true).reduce((m, l) => Math.max(m, l.position), -1)
+    this.d
+      .insert(payBlockLinks)
+      .values({ accountId, itemId, position: last + 1, createdAt: now })
+      .run()
+    this.db.scheduleSave()
+    return true
+  }
+
+  removePayLink(accountId: number, itemId: number): void {
+    this.d
+      .delete(payBlockLinks)
+      .where(and(eq(payBlockLinks.accountId, accountId), eq(payBlockLinks.itemId, itemId)))
+      .run()
+    this.db.scheduleSave()
+  }
+
+  /** 계정 안의 순서를 주어진 id 순서로 다시 매긴다(목록에 없는 연결은 뒤로 밀린다) */
+  setPayLinkOrder(accountId: number, itemIds: number[]): void {
+    const current = this.listPayLinks(accountId, true).map((l) => l.itemId)
+    const ordered = [
+      ...itemIds.filter((id) => current.includes(id)),
+      ...current.filter((id) => !itemIds.includes(id))
+    ]
+    ordered.forEach((itemId, position) => {
+      this.d
+        .update(payBlockLinks)
+        .set({ position })
+        .where(and(eq(payBlockLinks.accountId, accountId), eq(payBlockLinks.itemId, itemId)))
+        .run()
+    })
+    this.db.scheduleSave()
+  }
+
+  /** 블록(항목)이 지워질 때 그 연결을 모두 지운다 */
+  deletePayLinksByItem(itemId: number): void {
+    this.safeRead(() => {
+      this.d.delete(payBlockLinks).where(eq(payBlockLinks.itemId, itemId)).run()
+      this.db.scheduleSave()
+      return null
+    }, null)
+  }
+
+  listPaySupport(): PaySupportDto[] {
+    return this.safeRead(
+      () =>
+        this.d
+          .select()
+          .from(paySupport)
+          .all()
+          .map((r) => ({
+            siteKey: r.siteKey,
+            kind: r.kind as PayBlockKind,
+            status: normalizePaySupportStatus(r.status),
+            verifiedAt: r.verifiedAt
+          })),
+      []
+    )
+  }
+
+  setPaySupport(siteKey: string, kind: PayBlockKind, status: string, now: number): void {
+    const normalized = normalizePaySupportStatus(status)
+    const verifiedAt = normalized === 'verified' ? now : null
+    const existing = this.d
+      .select()
+      .from(paySupport)
+      .where(and(eq(paySupport.siteKey, siteKey), eq(paySupport.kind, kind)))
+      .all()
+    if (existing.length > 0) {
+      this.d
+        .update(paySupport)
+        .set({ status: normalized, verifiedAt, updatedAt: now })
+        .where(and(eq(paySupport.siteKey, siteKey), eq(paySupport.kind, kind)))
+        .run()
+    } else {
+      this.d
+        .insert(paySupport)
+        .values({ siteKey, kind, status: normalized, verifiedAt, updatedAt: now })
+        .run()
+    }
+    this.db.scheduleSave()
+  }
+
+  /**
+   * 계정에 딸린 결제 비밀번호('password') 항목 전부. 계정 자신의 항목(저장 순서)이 먼저, 이어서 끼워 둔
+   * 결제 수단 블록(연결 순서). 같은 항목이 둘 다에 있으면 한 번만 센다
+   */
+  listPaymentItemRows(accountId: number, opts: PaymentLookupOptions = {}): VaultItemRow[] {
+    const own = this.d
       .select()
       .from(vaultItems)
       .where(
@@ -426,6 +632,10 @@ export class VaultRepo {
       .orderBy(vaultItems.id)
       .all()
       .map(toItemRow)
+    if (opts.includeLinked === false) return own
+    const linked = this.linkedItemRows(accountId, 'password')
+    const seen = new Set(own.map((r) => r.id))
+    return [...own, ...linked.filter((r) => !seen.has(r.id))]
   }
 
   /**
@@ -455,6 +665,15 @@ export class VaultRepo {
       if (!list.includes(provider)) list.push(provider)
       map.set(row.accountId, list)
     }
+    const linkedAccounts = new Set(this.listPayLinks().map((l) => l.accountId))
+    for (const accountId of linkedAccounts) {
+      for (const item of this.linkedItemRows(accountId, 'password')) {
+        const list = map.get(accountId) ?? []
+        const provider = paymentProviderOfSections(item.sections)
+        if (!list.includes(provider)) list.push(provider)
+        map.set(accountId, list)
+      }
+    }
     return map
   }
 
@@ -465,14 +684,26 @@ export class VaultRepo {
    *   2개 이상이면 어느 결제창인지 알 수 없으므로 'ambiguous' 다 —
    *   잘못 누르면 계정이 잠기므로 절대 임의로 고르지 않는다
    */
-  findPaymentItemRow(accountId: number, provider?: PaymentProvider): PaymentItemLookup {
-    const rows = this.listPaymentItemRows(accountId)
+  findPaymentItemRow(
+    accountId: number,
+    provider?: PaymentProvider,
+    opts: PaymentLookupOptions = {}
+  ): PaymentItemLookup {
+    // 후보는 계정 자신의 항목 + 끼운 블록 전부다. 모호성('ambiguous')은 이 전체로 판정하고, 허용 여부
+    // (linkedAllowed — 끼운 블록은 검증됨만)는 고른 뒤에 본다. 허용 안 되는 블록을 먼저 빼 버리면
+    // '다른 수단이 하나 남았으니 그걸로'가 돼 잘못된 결제창에 잘못된 비밀번호가 들어간다
+    const rows = this.listPaymentItemRows(accountId, opts)
+    const usable = (row: VaultItemRow): boolean =>
+      row.accountId !== null || (opts.linkedAllowed ? opts.linkedAllowed(row) : true)
     if (provider) {
       const matched = rows.filter((r) => paymentProviderOfSections(r.sections) === provider)
-      const first = matched[0]
+      const first = matched.find(usable)
       return first ? { row: first } : { row: null, reason: 'not-found' }
     }
-    if (rows.length === 1) return { row: rows[0] }
+    if (rows.length === 1) {
+      const only = rows[0]
+      return usable(only) ? { row: only } : { row: null, reason: 'not-found' }
+    }
     if (rows.length === 0) return { row: null, reason: 'not-found' }
     return { row: null, reason: 'ambiguous' }
   }

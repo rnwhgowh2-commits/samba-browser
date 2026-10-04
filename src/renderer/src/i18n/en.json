@@ -601,6 +601,14 @@
       "paymentSection": "Payment passwords",
       "addPayment": "+ Add payment password",
       "noPayment": "No payment password saved yet",
+      "copyPayment": "Copy to other accounts",
+      "copyPaymentTitle": "Copy to other accounts of the same site (values are never shown)",
+      "copyPaymentNone": "No other accounts on this site",
+      "copyPaymentSelectAll": "Select all",
+      "copyPaymentClear": "Clear",
+      "copyPaymentRun": "Copy to {{count}} accounts",
+      "copyPaymentDone": "Copied {{copied}} items ({{skipped}} accounts skipped: already had them)",
+      "copyPaymentFail": "Copy failed. Check that the vault is unlocked",
       "deleteItem": "Delete",
       "value": "Value",
       "empty": "Select an account or item on the left",
@@ -819,6 +827,36 @@
       "badge": "Pay #{{n}}"
     }
   },
+  "payBlocks": {
+    "locked": "Unlock Key Master first",
+    "card": "Credit card",
+    "trayTitle": "Payment method blocks",
+    "trayHint": "Drag a block into a slot of an account below. Double-click to edit. Passwords are never shown here.",
+    "trayEmpty": "No blocks yet. Add one at the top right",
+    "addCard": "+ Card block",
+    "addPay": "+ Pay / payment password block",
+    "blockHint": "Drag onto an account · double-click to edit",
+    "accountsTitle": "Sites and accounts",
+    "accountsHint": "The chips next to a site name show its support status. Click to cycle unverified, verified, unsupported. Unverified blocks are only tried up to the step before payment: no password or card number is filled. Mark it verified to let it fill. Unsupported methods cannot be attached.",
+    "noAccounts": "No saved accounts",
+    "supportLabel": "Support",
+    "supportHint": "Click to change (unverified, verified, unsupported)",
+    "slotHere": "Drop here",
+    "remove": "Remove block",
+    "status": {
+      "unverified": "Unverified",
+      "verified": "Verified",
+      "unsupported": "Unsupported"
+    },
+    "msgLinked": "Attached",
+    "msgAlready": "This account already has that block",
+    "msgUnlinked": "Removed",
+    "msgReordered": "Order changed",
+    "msgUnsupported": "This site does not support that method (marked unsupported)",
+    "msgFull": "An account can hold up to {{max}} blocks",
+    "msgReleased": "Marked unsupported; removed {{count}} attached blocks",
+    "msgFail": "Could not do that. Check that Key Master is unlocked"
+  },
   "settingsPage": {
     "title": "Settings",
     "browser": {
@@ -860,6 +898,7 @@
       "ai": "AI connection",
       "automation": "Automation",
       "keymaster": "Key Master",
+      "payments": "Payments",
       "notify": "Notifications",
       "phones": "Phones"
     },

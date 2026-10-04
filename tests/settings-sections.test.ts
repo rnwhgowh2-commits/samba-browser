@@ -22,7 +22,8 @@ describe('설정 섹션 상수', () => {
       'appearance',
       'account',
       'security',
-      'keymaster'
+      'keymaster',
+      'payments'
     ])
     expect(sectionsOfGroup('agent').map((s) => s.key)).toEqual([
       'behavior',

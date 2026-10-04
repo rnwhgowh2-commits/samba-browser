@@ -313,3 +313,77 @@ export function withPayPriority(tags: readonly string[], priority: number | null
 export function visibleTags(tags: readonly string[]): string[] {
   return tags.filter((t) => !t.startsWith(PAY_PRIORITY_TAG_PREFIX))
 }
+
+// --- 결제 수단 블록 -----------------------------------------------------------
+// 블록 = 계정에 속하지 않는 전역 항목(결제 비밀번호 'password' 또는 카드 'card'). 한 번 만들어 두고 여러 계정에
+// 끼운다(연결). 연결은 계정마다 순서가 있다 — 같은 수단이 여럿이면 앞 순서가 먼저 쓰인다.
+// 연결 표(pay_block_links)·지원 표(pay_support)는 PC 로컬 전용이라 동기화하지 않는다
+export type PayBlockKind = 'card' | PaymentProvider
+
+/**
+ * 지원 상태. unsupported = 그 소싱처에서 못 쓴다(연결 거부) · unverified = 연결은 되고 결제 직전 단계까지는 시험할 수
+ * 있으나 값을 실제로 채우지는 않는다(키마스터가 끼운 블록의 값 채우기를 거절한다) · verified = 값 채우기 허용.
+ * 검증됨으로 올리는 것은 사용자가 시험(결제 직전 게이트 통과)을 확인한 뒤 화면에서 직접 한다
+ */
+export type PaySupportStatus = 'unsupported' | 'unverified' | 'verified'
+
+export const PAY_SUPPORT_STATUSES: readonly PaySupportStatus[] = [
+  'unsupported',
+  'unverified',
+  'verified'
+]
+
+/** 한 계정에 끼울 수 있는 블록 수의 상한(화면 칸 수와 같다) */
+export const MAX_PAY_BLOCKS_PER_ACCOUNT = 6
+
+export interface PayBlockDto {
+  itemId: number
+  label: string
+  type: 'password' | 'card'
+  kind: PayBlockKind
+}
+
+export interface PayLinkDto {
+  accountId: number
+  itemId: number
+  position: number
+}
+
+export interface PaySupportDto {
+  siteKey: string
+  kind: PayBlockKind
+  status: PaySupportStatus
+  verifiedAt: number | null
+}
+
+export interface PayBlocksState {
+  blocks: PayBlockDto[]
+  links: PayLinkDto[]
+  support: PaySupportDto[]
+}
+
+export function normalizePaySupportStatus(raw: string | null | undefined): PaySupportStatus {
+  return (PAY_SUPPORT_STATUSES as readonly string[]).includes(raw ?? '')
+    ? (raw as PaySupportStatus)
+    : 'unverified'
+}
+
+/** 항목 종류·제공자 필드로 블록 종류를 정한다. 카드 항목은 'card', 결제 비밀번호는 제공자('site' 기본) */
+export function payBlockKindOf(
+  type: VaultItemType,
+  sections: readonly ProviderLookupSection[]
+): PayBlockKind | null {
+  if (type === 'card') return 'card'
+  if (type === 'password') return paymentProviderOfSections(sections)
+  return null
+}
+
+/** 지원 표에서 상태를 읽는다. 기록이 없으면 'unverified'(막지 않되 실결제에도 쓰지 않는다) */
+export function paySupportStatusOf(
+  support: readonly PaySupportDto[],
+  siteKey: string,
+  kind: PayBlockKind
+): PaySupportStatus {
+  const hit = support.find((s) => s.siteKey === siteKey && s.kind === kind)
+  return hit ? hit.status : 'unverified'
+}

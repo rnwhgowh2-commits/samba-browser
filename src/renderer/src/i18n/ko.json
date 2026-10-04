@@ -601,6 +601,14 @@
       "paymentSection": "결제 비밀번호",
       "addPayment": "+ 결제 비밀번호 추가",
       "noPayment": "저장된 결제 비밀번호가 없어요",
+      "copyPayment": "다른 계정에 복사",
+      "copyPaymentTitle": "같은 사이트의 다른 계정에 복사 (값은 화면에 나오지 않아요)",
+      "copyPaymentNone": "같은 사이트의 다른 계정이 없어요",
+      "copyPaymentSelectAll": "전체 선택",
+      "copyPaymentClear": "선택 해제",
+      "copyPaymentRun": "{{count}}개 계정에 복사",
+      "copyPaymentDone": "{{copied}}개 항목을 복사했어요 (이미 있어서 건너뜀 {{skipped}}개 계정)",
+      "copyPaymentFail": "복사하지 못했어요. 금고가 잠겨 있는지 확인해 주세요",
       "deleteItem": "삭제",
       "value": "값",
       "empty": "왼쪽에서 계정이나 항목을 선택하세요",
@@ -819,6 +827,36 @@
       "badge": "결제 {{n}}순위"
     }
   },
+  "payBlocks": {
+    "locked": "키마스터를 먼저 잠금 해제해 주세요",
+    "card": "신용카드",
+    "trayTitle": "결제 수단 블록",
+    "trayHint": "블록을 끌어서 아래 계정의 칸에 끼웁니다. 두 번 누르면 편집해요. 비밀번호는 화면에 나오지 않아요.",
+    "trayEmpty": "아직 블록이 없어요. 오른쪽 위에서 추가해 주세요",
+    "addCard": "+ 카드 블록",
+    "addPay": "+ 페이·결제 비밀번호 블록",
+    "blockHint": "끌어서 계정에 끼우기 · 두 번 눌러 편집",
+    "accountsTitle": "소싱처와 계정",
+    "accountsHint": "소싱처 이름 옆 칩은 그 소싱처의 지원 상태예요. 누르면 미검증 → 검증됨 → 미지원 순으로 바뀌어요. 미검증은 결제 직전 단계까지만 시험하고 비밀번호·카드 번호는 채우지 않아요. 검증됨으로 올려야 실제로 채워요. 미지원인 수단은 끼울 수 없어요.",
+    "noAccounts": "저장된 계정이 없어요",
+    "supportLabel": "지원",
+    "supportHint": "눌러서 상태 바꾸기 (미검증 → 검증됨 → 미지원)",
+    "slotHere": "여기에 끼우기",
+    "remove": "블록 빼기",
+    "status": {
+      "unverified": "미검증",
+      "verified": "검증됨",
+      "unsupported": "미지원"
+    },
+    "msgLinked": "끼웠어요",
+    "msgAlready": "이 계정에 이미 있는 블록이에요",
+    "msgUnlinked": "뺐어요",
+    "msgReordered": "순서를 바꿨어요",
+    "msgUnsupported": "이 소싱처에서 쓸 수 없는 수단이에요 (지원 상태가 미지원)",
+    "msgFull": "한 계정에 {{max}}개까지 끼울 수 있어요",
+    "msgReleased": "미지원으로 바꿔서 끼워 둔 블록 {{count}}개를 뺐어요",
+    "msgFail": "처리하지 못했어요. 키마스터가 잠겨 있는지 확인해 주세요"
+  },
   "settingsPage": {
     "title": "설정",
     "browser": {
@@ -860,6 +898,7 @@
       "ai": "AI 연결",
       "automation": "자동화",
       "keymaster": "키마스터",
+      "payments": "결제",
       "notify": "알림 연동",
       "phones": "폰 연동"
     },

@@ -47,6 +47,11 @@ export const IPC = {
   vaultItems: 'vault:items',
   vaultPutItem: 'vault:putItem',
   vaultCopyPaymentItems: 'vault:copyPaymentItems', // 결제 비밀번호 항목을 다른 계정으로 복사(평문은 메인 안에서만)
+  vaultPayBlocks: 'vault:payBlocks', // 결제 수단 블록·연결·지원 표(비밀값 없음)
+  vaultPayLink: 'vault:payLink', // 계정에 블록 끼우기
+  vaultPayUnlink: 'vault:payUnlink', // 계정에서 블록 빼기
+  vaultPayReorder: 'vault:payReorder', // 계정 안 블록 순서 바꾸기
+  vaultPaySupport: 'vault:paySupport', // 소싱처×수단 지원 상태 바꾸기
   vaultDeleteItem: 'vault:deleteItem',
   vaultReveal: 'vault:reveal',
   vaultUpsertAccount: 'vault:upsertAccount',
@@ -305,6 +310,12 @@ export type {
   VaultSection,
   FieldKind,
   PaymentProvider,
+  PayBlockKind,
+  PayBlockDto,
+  PayLinkDto,
+  PaySupportDto,
+  PaySupportStatus,
+  PayBlocksState,
   AgentAccess,
   SiteDto,
   AccountDto,

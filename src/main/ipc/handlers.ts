@@ -61,7 +61,8 @@ import {
   CAPTURE_DECISIONS,
   CAPTURE_TRACE_STAGES,
   maskUsername,
-  type CaptureDecision
+  type CaptureDecision,
+  type PayBlockKind
 } from '../../shared/vault'
 import { VaultPickerGate } from './vault-picker'
 import { autofillAccount, type AutofillDeps } from '../vault/autofill'
@@ -518,6 +519,36 @@ export function registerIpc(
     if (!Number.isInteger(from) || !Number.isInteger(to))
       throw new Error(tr('vault.accountNotFound'))
     return vault.copyPaymentItems(from as number, to as number)
+  })
+  // 결제 수단 블록 — 사용자 화면에서만 부른다. 값은 오가지 않고 id·순서·상태만 오간다
+  handleFromRenderer(IPC.vaultPayBlocks, () => {
+    vault.touch()
+    return vault.payBlocksState()
+  })
+  handleFromRenderer(IPC.vaultPayLink, (accountId: unknown, itemId: unknown) => {
+    if (!Number.isInteger(accountId) || !Number.isInteger(itemId))
+      throw new Error(tr('vault.accountNotFound'))
+    return vault.linkPayBlock(accountId as number, itemId as number)
+  })
+  handleFromRenderer(IPC.vaultPayUnlink, (accountId: unknown, itemId: unknown) => {
+    if (!Number.isInteger(accountId) || !Number.isInteger(itemId))
+      throw new Error(tr('vault.accountNotFound'))
+    vault.unlinkPayBlock(accountId as number, itemId as number)
+  })
+  handleFromRenderer(IPC.vaultPayReorder, (accountId: unknown, itemIds: unknown) => {
+    if (!Number.isInteger(accountId) || !Array.isArray(itemIds) || !itemIds.every(Number.isInteger))
+      throw new Error(tr('vault.accountNotFound'))
+    vault.reorderPayLinks(accountId as number, itemIds as number[])
+  })
+  handleFromRenderer(IPC.vaultPaySupport, (siteKey: unknown, kind: unknown, status: unknown) => {
+    if (
+      typeof siteKey !== 'string' ||
+      !siteKey ||
+      typeof kind !== 'string' ||
+      typeof status !== 'string'
+    )
+      throw new Error(tr('vault.accountNotFound'))
+    return vault.setPaySupport(siteKey, kind as PayBlockKind, status)
   })
   handleFromRenderer(IPC.vaultDeleteItem, (id: number) => vault.deleteItem(id))
   // 사용자가 '보기' 를 눌렀을 때만 호출된다(감사 로그 기록됨)
@@ -1253,7 +1284,11 @@ export function registerIpc(
   // 막는 사이트는 전용 프로필에만 프록시를 건다(사용자 2026-09-28)
   const profileProxies = loadProfileProxies(app.getPath('userData'))
   tabs.setSessionHook((ses, partition) => {
-    applyProfileProxy(ses, profileOfPartition(partition, workspace.partitionPrefix()), profileProxies)
+    applyProfileProxy(
+      ses,
+      profileOfPartition(partition, workspace.partitionPrefix()),
+      profileProxies
+    )
     enableExtensionServiceWorkerSupport(ses, join(__dirname, '../preload/extension-sw.js'))
     // 파티션 이름을 함께 넘긴다 — 같은 세션이 두 번 들어와도 한 번만 붙는다
     void extensions
@@ -1277,7 +1312,8 @@ export function registerIpc(
     setTimeout(() => {
       const t = tabs.active()
       const wc = t?.view.webContents
-      if (wc && !wc.isDestroyed()) sendExtensionTabEvent(wc.session, 'activated', { tabId: wc.id, windowId: 0 })
+      if (wc && !wc.isDestroyed())
+        sendExtensionTabEvent(wc.session, 'activated', { tabId: wc.id, windowId: 0 })
     }, 0)
   })
 

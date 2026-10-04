@@ -191,6 +191,25 @@ export const accountPhones = sqliteTable('account_phones', {
   updatedAt: integer('updated_at').notNull()
 })
 
+// 결제 수단 블록 연결 — 계정에 끼운 전역 항목(결제 비밀번호·카드)과 순서. PC 로컬 전용(동기화 안 함)
+export const payBlockLinks = sqliteTable('pay_block_links', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  accountId: integer('account_id').notNull(),
+  itemId: integer('item_id').notNull(),
+  position: integer('position').notNull().default(0),
+  createdAt: integer('created_at').notNull()
+})
+
+// 소싱처(등록 도메인) × 결제 수단 종류의 지원·검증 상태. PC 로컬 전용
+export const paySupport = sqliteTable('pay_support', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  siteKey: text('site_key').notNull(),
+  kind: text('kind').notNull(),
+  status: text('status').notNull(),
+  verifiedAt: integer('verified_at'),
+  updatedAt: integer('updated_at').notNull()
+})
+
 // 동기화 부가 상태. 'lastPulledAt' | 'deviceId' | 'userId' | 'settings:<key>:updatedAt'
 export const syncState = sqliteTable('sync_state', {
   key: text('key').primaryKey(),

@@ -69,7 +69,13 @@ import {
 import type { AgentImage } from '../shared/agent-image'
 import type { AiUsage } from '../shared/ai'
 import type { AuthState, WorkspaceDto } from '../shared/sync'
-import type { ExportRequest, ExportResult } from '../shared/vault'
+import type {
+  ExportRequest,
+  ExportResult,
+  PayBlockKind,
+  PayBlocksState,
+  PaySupportStatus
+} from '../shared/vault'
 import type { HarnessResult } from '../main/harness/client'
 import type {
   HarnessGraph,
@@ -289,6 +295,19 @@ const api = {
     // 결제 비밀번호 항목을 다른 계정으로 복사. 복사한 개수만 돌아온다
     copyPaymentItems: (fromAccountId: number, toAccountId: number): Promise<IpcResult<number>> =>
       invoke(IPC.vaultCopyPaymentItems, fromAccountId, toAccountId),
+    // 결제 수단 블록 — 값 없이 id·순서·상태만 오간다
+    payBlocks: (): Promise<IpcResult<PayBlocksState>> => invoke(IPC.vaultPayBlocks),
+    payLink: (accountId: number, itemId: number): Promise<IpcResult<boolean>> =>
+      invoke(IPC.vaultPayLink, accountId, itemId),
+    payUnlink: (accountId: number, itemId: number): Promise<IpcResult<void>> =>
+      invoke(IPC.vaultPayUnlink, accountId, itemId),
+    payReorder: (accountId: number, itemIds: number[]): Promise<IpcResult<void>> =>
+      invoke(IPC.vaultPayReorder, accountId, itemIds),
+    paySupport: (
+      siteKey: string,
+      kind: PayBlockKind,
+      status: PaySupportStatus
+    ): Promise<IpcResult<number>> => invoke(IPC.vaultPaySupport, siteKey, kind, status),
     // 사용자가 '보기' 를 눌렀을 때만 호출한다. fieldKey 로 항목 안의 개별 필드를 지정한다
     reveal: (id: number, fieldKey?: string): Promise<IpcResult<string>> =>
       invoke(IPC.vaultReveal, id, fieldKey),

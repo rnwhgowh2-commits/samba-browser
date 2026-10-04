@@ -20,7 +20,8 @@ import {
   type AccountRow,
   type AccountSnapshot,
   type VaultItemRow,
-  type PaymentItemLookup
+  type PaymentItemLookup,
+  type PaymentLookupOptions
 } from './repo'
 import {
   DEFAULT_FIELD_KEY,
@@ -61,6 +62,8 @@ import type {
   AgentAccess,
   CapturePromptDto,
   FieldKind,
+  PayBlockKind,
+  PayBlocksState,
   PaymentProvider,
   PickerAccountDto,
   SiteDto,
@@ -69,6 +72,11 @@ import type {
   VaultState
 } from '../../shared/vault'
 import {
+  MAX_PAY_BLOCKS_PER_ACCOUNT,
+  PAYMENT_PROVIDERS,
+  PAY_SUPPORT_STATUSES,
+  payBlockKindOf,
+  paySupportStatusOf,
   paymentProviderOfSections,
   paymentAccountOfSections,
   PAYMENT_PROVIDER_ACCOUNT_HOST
@@ -1120,7 +1128,8 @@ export class VaultService {
     // 결제 비밀번호는 계정당 여러 개다 — 같은 결제 수단일 때만 덮어쓰고, 아니면 새로 만든다
     if (input.type === 'password') {
       const provider = paymentProviderOfSections(input.sections ?? [])
-      return this.repo.findPaymentItemRow(input.accountId, provider).row
+      // 끼워 둔 공유 블록은 후보가 아니다 — 계정 자신의 항목만 본다(아니면 다른 계정의 비밀번호까지 바뀐다)
+      return this.repo.findPaymentItemRow(input.accountId, provider, { includeLinked: false }).row
     }
     return this.repo.findItemRow(input.accountId, input.type)
   }
@@ -1241,6 +1250,8 @@ export class VaultService {
     // 삭제 표식을 만들려면 행이 남아 있어야 한다 — 반드시 지우기 전에 기록한다
     this.record('vault_items', id, 'delete')
     this.repo.deleteItem(id)
+    // 블록으로 끼워 둔 항목이면 그 연결도 함께 지운다(없는 항목을 가리키는 연결을 남기지 않는다)
+    this.repo.deletePayLinksByItem(id)
     this.repo.insertAudit({
       itemId: id,
       accountId: meta?.accountId ?? null,
@@ -1260,9 +1271,13 @@ export class VaultService {
   copyPaymentItems(fromAccountId: number, toAccountId: number): number {
     const key = this.requireKey()
     if (fromAccountId === toAccountId) return 0
-    const sources = this.repo.listPaymentItemRows(fromAccountId)
+    // 계정 자신의 항목만 복사한다 — 끼운 블록은 복사본이 되면 연결·검증 제한을 벗어난다
+    const own = { includeLinked: false }
+    const sources = this.repo.listPaymentItemRows(fromAccountId, own)
     const existing = new Set(
-      this.repo.listPaymentItemRows(toAccountId).map((r) => paymentProviderOfSections(r.sections))
+      this.repo
+        .listPaymentItemRows(toAccountId, own)
+        .map((r) => paymentProviderOfSections(r.sections))
     )
     let copied = 0
     for (const row of sources) {
@@ -1300,6 +1315,94 @@ export class VaultService {
       copied += 1
     }
     return copied
+  }
+
+  // --- 결제 수단 블록 -----------------------------------------------------------
+  // 블록 = 계정 없는 결제 비밀번호·카드 항목. 계정에 끼우면(연결) 그 계정의 결제 조회에 순서대로 합쳐진다.
+  // 비밀값은 어디로도 복사되지 않는다 — 연결 표에는 id 와 순서만 있다
+
+  /** 화면용 전체 상태: 블록 목록(비밀값 없음) · 연결 · 소싱처×수단 지원 표 */
+  payBlocksState(): PayBlocksState {
+    this.requireKey()
+    const blocks = this.repo.listItems(null).flatMap((item) => {
+      if (item.type !== 'password' && item.type !== 'card') return []
+      const kind = payBlockKindOf(item.type, item.sections)
+      if (!kind) return []
+      return [{ itemId: item.id, label: item.label, type: item.type, kind }]
+    })
+    return { blocks, links: this.repo.listPayLinks(), support: this.repo.listPaySupport() }
+  }
+
+  /** 소싱처 키(등록 도메인) — 지원 표의 행 이름이다 */
+  paySiteKeyOfAccount(accountId: number): string | null {
+    const account = this.repo.getAccount(accountId)
+    if (!account) return null
+    return accountGroupKey(account.host) || account.host
+  }
+
+  /**
+   * 계정에 블록을 끼운다. 거절 사유는 문자열 코드로 던진다 —
+   * account-not-found · block-not-found · unsupported(그 소싱처에서 못 쓰는 수단) · full(칸이 가득 참)
+   * 이미 끼워져 있으면 false, 새로 끼우면 true
+   */
+  linkPayBlock(accountId: number, itemId: number): boolean {
+    this.requireKey()
+    const siteKey = this.paySiteKeyOfAccount(accountId)
+    if (!siteKey) throw new Error('account-not-found')
+    const block = this.payBlocksState().blocks.find((b) => b.itemId === itemId)
+    if (!block) throw new Error('block-not-found')
+    if (paySupportStatusOf(this.repo.listPaySupport(), siteKey, block.kind) === 'unsupported') {
+      throw new Error('unsupported')
+    }
+    if (this.repo.listPayLinks(accountId).length >= MAX_PAY_BLOCKS_PER_ACCOUNT) {
+      throw new Error('full')
+    }
+    const added = this.repo.addPayLink(accountId, itemId, Date.now())
+    if (added) this.touch()
+    return added
+  }
+
+  unlinkPayBlock(accountId: number, itemId: number): void {
+    this.requireKey()
+    this.repo.removePayLink(accountId, itemId)
+    this.touch()
+  }
+
+  /** 계정 안의 블록 순서를 바꾼다 — 앞이 먼저 쓰인다 */
+  reorderPayLinks(accountId: number, itemIds: number[]): void {
+    this.requireKey()
+    this.repo.setPayLinkOrder(accountId, itemIds)
+    this.touch()
+  }
+
+  /**
+   * 소싱처×수단 지원 상태를 바꾼다. 'unsupported' 로 바꾸면 이미 끼워진 연결 중 그 조합에 해당하는 것은
+   * 풀린다(못 쓰는 수단이 계정에 남아 결제에 잡히지 않게). 풀린 연결 수를 돌려준다
+   */
+  setPaySupport(siteKey: string, kind: PayBlockKind, status: string): number {
+    this.requireKey()
+    // 허용값만 받는다 — 잘못된 값이 조용히 '미검증'으로 바뀌어 기존 '미지원'을 풀어 버리지 않게
+    if (
+      !siteKey.trim() ||
+      (kind !== 'card' && !(PAYMENT_PROVIDERS as readonly string[]).includes(kind)) ||
+      !(PAY_SUPPORT_STATUSES as readonly string[]).includes(status)
+    ) {
+      throw new Error('invalid')
+    }
+    this.repo.setPaySupport(siteKey, kind, status, Date.now())
+    let released = 0
+    if (status === 'unsupported') {
+      const blocks = new Map(this.payBlocksState().blocks.map((b) => [b.itemId, b]))
+      for (const link of this.repo.listPayLinks()) {
+        const block = blocks.get(link.itemId)
+        if (!block || block.kind !== kind) continue
+        if (this.paySiteKeyOfAccount(link.accountId) !== siteKey) continue
+        this.repo.removePayLink(link.accountId, link.itemId)
+        released += 1
+      }
+    }
+    this.touch()
+    return released
   }
 
   reveal(id: number, fieldKey: string = DEFAULT_FIELD_KEY): string {
@@ -1343,9 +1446,14 @@ export class VaultService {
       return this.getPaymentSecretForFill({ accountId, provider, fieldKey, jobId, source }).value
     }
     if (!this.key) return null
-    const row = this.repo.findItemRow(accountId, type)
+    // 카드는 한 장에서 모든 필드를 읽는다 — 계정 자신의 카드가 있으면 그 카드, 없으면 끼운 카드 블록 중
+    // 검증된 것의 첫 장. 필드마다 다른 카드로 넘어가면 번호와 CVC 가 서로 다른 카드 것이 섞인다
+    const row =
+      this.repo.findItemRow(accountId, type) ??
+      (type === 'card' ? this.firstVerifiedLinkedCard(accountId) : null)
     const own = row ? this.decryptForFill(row, fieldKey, jobId, source) : null
     if (own !== null) return own
+    if (type === 'card') return null
     // 신원정보는 "나"의 것이라 계정마다 같다 — 계정에 없으면 전역 신원정보에서 찾는다.
     // (직배 배송지의 CS 연락처를 구매 계정마다 다시 적지 않게. 카드·로그인은 계정에 묶인 값이라 넘겨 쓰지 않는다)
     if (type !== 'identity') return null
@@ -1361,14 +1469,39 @@ export class VaultService {
    * 돼 있어도 그 앱의 결제 비밀번호다(실기 13차: 네이버 계정의 항목이 site 라 네이버페이 조회가 not-found) —
    * 결제 수단으로 못 찾으면 그 계정이 그 결제 수단의 앱 계정일 때만 site 항목으로 다시 찾는다
    */
-  private findPaymentRowFor(accountId: number, provider?: PaymentProvider): PaymentItemLookup {
-    const found = this.repo.findPaymentItemRow(accountId, provider)
+  private findPaymentRowFor(
+    accountId: number,
+    provider?: PaymentProvider,
+    forFill = false
+  ): PaymentItemLookup {
+    // 실제 값을 채울 때는 끼운 블록 중 '검증됨'만 센다. 존재 확인(견적 후보·화면 표시)은 모두 센다 —
+    // 그래야 검증 전 조합도 결제 직전 단계까지 시험해 볼 수 있다
+    const opts: PaymentLookupOptions = forFill
+      ? { linkedAllowed: (row) => this.isLinkedBlockVerified(accountId, row) }
+      : {}
+    const found = this.repo.findPaymentItemRow(accountId, provider, opts)
     if (found.row || !provider || provider === 'site') return found
     const appHost = PAYMENT_PROVIDER_ACCOUNT_HOST[provider]
     if (!appHost) return found
     const account = this.repo.getAccount(accountId)
     if (!account || accountGroupKey(account.host) !== appHost) return found
-    return this.repo.findPaymentItemRow(accountId, 'site')
+    return this.repo.findPaymentItemRow(accountId, 'site', opts)
+  }
+
+  /** 끼운 블록이 이 계정의 소싱처에서 '검증됨'인가(실결제 입력에 써도 되는가) */
+  private isLinkedBlockVerified(accountId: number, row: VaultItemRow): boolean {
+    const kind = payBlockKindOf(row.type, row.sections)
+    const siteKey = this.paySiteKeyOfAccount(accountId)
+    if (!kind || !siteKey) return false
+    return paySupportStatusOf(this.repo.listPaySupport(), siteKey, kind) === 'verified'
+  }
+
+  private firstVerifiedLinkedCard(accountId: number): VaultItemRow | null {
+    return (
+      this.repo
+        .linkedItemRows(accountId, 'card')
+        .find((row) => this.isLinkedBlockVerified(accountId, row)) ?? null
+    )
   }
 
   /** 계정에 그 결제 수단의 결제 비밀번호 항목(직접 값 또는 앱 계정 연결)이 있는가. 복호화하지 않는다 */
@@ -1409,7 +1542,7 @@ export class VaultService {
     // 네이버는 서브도메인마다 다른 계정(nid / accounts.commerce / mail)이 같은 아이디일 수 있다 —
     // 그 아이디 중 이 결제 수단의 비밀번호를 실제로 가진 계정을 고른다
     for (const target of this.matchAccountRows(appHost).filter((a) => a.username === username)) {
-      const found = this.findPaymentRowFor(target.id, provider)
+      const found = this.findPaymentRowFor(target.id, provider, true)
       if (!found.row) continue
       const targetSecret = findField(found.row.sections, DEFAULT_FIELD_KEY)
       if (targetSecret && isSecretField(targetSecret)) return found.row
@@ -1430,7 +1563,7 @@ export class VaultService {
     source?: 'ai' | 'user'
   }): PaymentSecretResult {
     if (!this.key) return { value: null, reason: 'locked' }
-    const found = this.findPaymentRowFor(args.accountId, args.provider)
+    const found = this.findPaymentRowFor(args.accountId, args.provider, true)
     if (!found.row) return { value: null, reason: found.reason }
     // 쇼핑몰 계정의 항목이 "네이버 계정 mjkim88 의 비밀번호를 쓴다"는 연결이면 그 앱 계정의 항목으로 간다
     const linked = this.linkedPaymentRow(found.row)

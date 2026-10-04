@@ -380,6 +380,50 @@ function PaymentSection({
 }): React.JSX.Element {
   const { t } = useTranslation()
   const deleteItem = useVaultStore((s) => s.deleteItem)
+  const accounts = useVaultStore((s) => s.accounts)
+  const loadItems = useVaultStore((s) => s.loadItems)
+  const [copyOpen, setCopyOpen] = useState(false)
+  const [picked, setPicked] = useState<Set<number>>(new Set())
+  const [copyMsg, setCopyMsg] = useState<string | null>(null)
+  const [copyBusy, setCopyBusy] = useState(false)
+
+  // 같은 사이트(같은 호스트)의 다른 계정만 대상으로 한다
+  const self = accounts.find((a) => a.id === accountId)
+  const targets = self ? accounts.filter((a) => a.id !== accountId && a.host === self.host) : []
+
+  const toggle = (id: number): void =>
+    setPicked((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  // 값은 메인 프로세스 안에서만 복호화 → 재암호화된다. 여기서는 개수만 받는다
+  const runCopy = async (): Promise<void> => {
+    setCopyBusy(true)
+    setCopyMsg(null)
+    let copied = 0
+    let skipped = 0
+    let failed = false
+    for (const toId of picked) {
+      const r = await window.samba.vault.copyPaymentItems(accountId, toId)
+      if (!r.ok) {
+        failed = true
+        break
+      }
+      if (r.data === 0) skipped += 1
+      else copied += r.data
+      await loadItems(toId)
+    }
+    setCopyBusy(false)
+    setCopyMsg(
+      failed
+        ? t('vault.detail.copyPaymentFail')
+        : t('vault.detail.copyPaymentDone', { copied, skipped })
+    )
+    if (!failed) setPicked(new Set())
+  }
 
   return (
     <section className="mb-5">
@@ -387,15 +431,72 @@ function PaymentSection({
         <h4 className="text-[12px] font-semibold text-[var(--text2)]">
           {t('vault.detail.paymentSection')}
         </h4>
-        <Button
-          variant="outline"
-          size="sm"
-          className="ml-auto h-[26px] rounded-[9px]"
-          onClick={onAdd}
-        >
-          {t('vault.detail.addPayment')}
-        </Button>
+        <div className="ml-auto flex gap-1.5">
+          {items.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-[26px] rounded-[9px]"
+              title={t('vault.detail.copyPaymentTitle')}
+              onClick={() => setCopyOpen((v) => !v)}
+            >
+              {t('vault.detail.copyPayment')}
+            </Button>
+          )}
+          <Button variant="outline" size="sm" className="h-[26px] rounded-[9px]" onClick={onAdd}>
+            {t('vault.detail.addPayment')}
+          </Button>
+        </div>
       </div>
+      {copyOpen && (
+        <div className="mb-2 rounded-xl border border-[var(--line)] bg-white px-3.5 py-3">
+          {targets.length === 0 ? (
+            <div className="text-[12.5px] text-[var(--text3)]">
+              {t('vault.detail.copyPaymentNone')}
+            </div>
+          ) : (
+            <>
+              <div className="mb-2 flex gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setPicked(new Set(targets.map((a) => a.id)))}
+                  className="h-6 rounded-[7px] border border-[var(--line)] px-2 text-[11.5px] text-[var(--text2)]"
+                >
+                  {t('vault.detail.copyPaymentSelectAll')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPicked(new Set())}
+                  className="h-6 rounded-[7px] border border-[var(--line)] px-2 text-[11.5px] text-[var(--text2)]"
+                >
+                  {t('vault.detail.copyPaymentClear')}
+                </button>
+              </div>
+              <div className="mb-2 grid max-h-[180px] grid-cols-2 gap-x-3 gap-y-1 overflow-y-auto">
+                {targets.map((a) => (
+                  <label key={a.id} className="flex items-center gap-1.5 text-[12.5px]">
+                    <input
+                      type="checkbox"
+                      checked={picked.has(a.id)}
+                      onChange={() => toggle(a.id)}
+                    />
+                    <span className="truncate">{a.label}</span>
+                  </label>
+                ))}
+              </div>
+              <Button
+                size="sm"
+                className="h-[28px] rounded-[9px]"
+                disabled={copyBusy || picked.size === 0}
+                onClick={() => void runCopy()}
+              >
+                {t('vault.detail.copyPaymentRun', { count: picked.size })}
+              </Button>
+            </>
+          )}
+          {copyMsg && <div className="mt-2 text-[12px] text-[var(--text2)]">{copyMsg}</div>}
+        </div>
+      )}
       {items.length === 0 ? (
         <div className="rounded-xl border border-[var(--line)] bg-white px-3.5 py-4 text-center text-[12.5px] text-[var(--text3)]">
           {t('vault.detail.noPayment')}
@@ -616,6 +717,7 @@ export function ItemDetail({
         ))}
 
       <PaymentSection
+        key={account.id}
         accountId={account.id}
         items={items.filter((item) => item.type === 'password')}
         onAdd={onAddPayment}
