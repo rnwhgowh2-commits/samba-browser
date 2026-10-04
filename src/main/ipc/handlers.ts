@@ -262,7 +262,9 @@ export function registerIpc(
   // 하네스 브릿지 — 밖의 LangGraph 하네스가 이 앱의 도구를 부르는 문. 설정으로 켜고 끈다
   const bridge = new BridgeServer({
     openSession: (onStep, lane) => agent.createToolSession({ onStep, ...(lane ? { lane } : {}) }),
-    token: () => settings.get().bridgeToken
+    token: () => settings.get().bridgeToken,
+    // 삼바웨이브 연동: 세션 관리자가 삼바 계정을 로컬 입구로 금고에 넣는다(importService 는 아래에서 만들어진다)
+    importLogins: (rows) => importService.importLogins(rows)
   })
   const applyBridge = (): Promise<void> =>
     applyBridgeSettings(

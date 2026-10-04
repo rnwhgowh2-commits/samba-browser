@@ -17,6 +17,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { call, health, sleep, BridgeDown, BridgeBusy } from './bridge.mjs'
+import { syncFromSamba } from './samba-sync.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DATA_DIR = join(process.env.APPDATA ?? HERE, 'SAMBA Browser', 'session-keeper')
@@ -555,6 +556,14 @@ async function main() {
   if (cmd === 'once') {
     const st = await checkOnce({ only: opt('--site'), dry: flag('--dry') })
     return printStatus(st)
+  }
+  if (cmd === 'sync-samba') {
+    // 삼바웨이브 계정을 키마스터로 동기화(sites.json 의 sambaSync.sites, --sites 로 덮어쓸 수 있다)
+    const sites = (opt('--sites') ?? (cfg.sambaSync?.sites ?? ['MUSINSA']).join(',')).split(',').map((x) => x.trim()).filter(Boolean)
+    const r = await syncFromSamba({ sites, dry: flag('--dry') })
+    log(`삼바 계정 동기화: ${JSON.stringify(r)}`)
+    say(JSON.stringify(r, null, 2))
+    return
   }
   if (cmd === 'setup-accounts') {
     // 키마스터에 저장된 해당 사이트 계정(라벨)을 읽어 계정마다 프로필을 배정하고 sites.json 에 기록한다. 비밀번호는 읽지 않는다

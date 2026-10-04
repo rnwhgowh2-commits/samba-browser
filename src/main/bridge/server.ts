@@ -8,6 +8,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { timingSafeEqual } from 'node:crypto'
 import type { ToolSession } from '../agent/runner'
+import type { ParsedLogin } from '../import/passwords-csv'
+import type { ImportPasswordsResult } from '../../shared/import'
 
 export interface BridgeDeps {
   /** lane 이 있으면 그 레인 세션(다른 레인과 동시에 열린다) */
@@ -16,6 +18,8 @@ export interface BridgeDeps {
   toolTimeoutMs?: number
   /** 제한 시간 뒤에도 도구 호출이 안 끝나면 이만큼 더 기다렸다가 강제로 busy 를 푼다 */
   hangGraceMs?: number
+  /** 삼바웨이브 연동 — 로그인 행을 금고에 반영한다. 금고가 잠겨 있으면 'locked' 를 던진다 */
+  importLogins?: (rows: ParsedLogin[]) => ImportPasswordsResult
 }
 
 const DEFAULT_TOOL_TIMEOUT_MS = 90_000
@@ -103,9 +107,52 @@ export class BridgeServer {
     if (!this.authorized(req)) return json(res, 401, { error: 'unauthorized' })
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     if (req.method === 'GET' && url.pathname === '/health') return this.health(res)
+    if (req.method === 'POST' && url.pathname === '/vault/import-logins') return this.importLogins(req, res)
     const m = /^\/tool\/([a-z0-9_]{1,64})$/.exec(url.pathname)
     if (req.method === 'POST' && m) return this.tool(m[1], req, res)
     return json(res, 404, { error: 'not found' })
+  }
+
+  /**
+   * 삼바웨이브 계정을 키마스터에 넣는다. 본문 { logins: [{ url, username, password, name? }] }.
+   * 응답에는 건수만 담는다(비밀값 없음). 이 경로는 127.0.0.1 + 토큰으로만 열린다
+   */
+  private async importLogins(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.deps.importLogins) return json(res, 404, { error: 'not found' })
+    let body: string
+    try {
+      body = await readBody(req)
+    } catch (e: unknown) {
+      if (e instanceof BodyTooLarge) return json(res, 413, { error: 'body too large' })
+      return json(res, 400, { error: 'invalid body' })
+    }
+    let rows: ParsedLogin[]
+    try {
+      const parsed = JSON.parse(body) as { logins?: unknown }
+      if (!Array.isArray(parsed.logins) || parsed.logins.length === 0 || parsed.logins.length > 500) {
+        return json(res, 400, { error: 'logins 는 1~500개 배열이어야 합니다' })
+      }
+      rows = []
+      for (const raw of parsed.logins) {
+        const r = raw as Record<string, unknown>
+        const url = typeof r.url === 'string' ? r.url.trim() : ''
+        const username = typeof r.username === 'string' ? r.username.trim() : ''
+        const password = typeof r.password === 'string' ? r.password : ''
+        if (!url || !username || !password) continue
+        const name = typeof r.name === 'string' ? r.name.trim() : ''
+        rows.push({ name, url, host: '', username, password, note: '' })
+      }
+    } catch {
+      return json(res, 400, { error: 'invalid json' })
+    }
+    try {
+      const result = this.deps.importLogins(rows)
+      json(res, 200, { ok: true, ...result })
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg === 'locked') return json(res, 423, { ok: false, error: 'vault locked' })
+      json(res, 500, { ok: false, error: 'import failed' })
+    }
   }
 
   private async health(res: ServerResponse): Promise<void> {

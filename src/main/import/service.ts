@@ -5,7 +5,7 @@ import { readFile as fsReadFile, writeFile as fsWriteFile } from 'node:fs/promis
 import type { Db } from '../db/client'
 import type { VaultService } from '../vault/service'
 import { BookmarkRepo } from '../bookmarks/repo'
-import { parsePasswordCsv } from './passwords-csv'
+import { parsePasswordCsv, type ParsedLogin } from './passwords-csv'
 import { parseNetscapeBookmarks } from './bookmarks-html'
 import { toNetscapeHtml } from './bookmarks-export'
 import { normalizeHost } from '../../shared/host'
@@ -91,6 +91,19 @@ export class ImportService {
       parsePasswordCsv(text)
     text = undefined
 
+    const result = this.importLogins(parsed.rows, parsed.skipped)
+    // 비밀번호가 담긴 파싱 결과 참조를 더 이상 들고 있지 않는다
+    parsed = undefined
+    return result
+  }
+
+  /**
+   * 로그인 행 목록을 금고에 반영한다(CSV 가져오기와 삼바웨이브 연동 입구가 함께 쓴다).
+   * 금고가 잠겨 있으면 'locked' 에러. (host, username) 이 이미 있으면 비밀번호만 갱신한다
+   */
+  importLogins(rows: ParsedLogin[], alreadySkipped = 0): ImportPasswordsResult {
+    if (this.vault.state() !== 'unlocked') throw new Error('locked')
+    const parsed = { rows, skipped: alreadySkipped }
     const result: ImportPasswordsResult = {
       total: parsed.rows.length,
       added: 0,
@@ -137,8 +150,6 @@ export class ImportService {
     }
 
     result.sites = seenHosts.size
-    // 비밀번호가 담긴 파싱 결과 참조를 더 이상 들고 있지 않는다
-    parsed = undefined
 
     this.vault.logAudit('import', 'user')
     this.db.scheduleSave()

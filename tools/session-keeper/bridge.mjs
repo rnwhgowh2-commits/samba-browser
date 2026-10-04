@@ -68,4 +68,9 @@ export async function call(tool, args = {}, { lane, retries = 6 } = {}) {
   }
 }
 
+/** 앱 브릿지에 JSON 을 보낸다(도구 호출이 아닌 로컬 입구용). 응답 본문에 비밀값은 없다 */
+export async function postJson(path, body) {
+  return request(path, { method: 'POST', body })
+}
+
 export const sleep = (ms) => new Promise((res) => setTimeout(res, ms))
