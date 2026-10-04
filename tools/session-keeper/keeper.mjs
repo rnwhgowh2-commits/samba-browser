@@ -556,6 +556,32 @@ async function main() {
     const st = await checkOnce({ only: opt('--site'), dry: flag('--dry') })
     return printStatus(st)
   }
+  if (cmd === 'setup-accounts') {
+    // 키마스터에 저장된 해당 사이트 계정(라벨)을 읽어 계정마다 프로필을 배정하고 sites.json 에 기록한다. 비밀번호는 읽지 않는다
+    const base = cfg.sites.find((x) => (x.baseId ?? x.id) === opt('--site'))
+    if (!base) throw new Error('--site 로 사이트 ID 를 주세요(예: MUSINSA)')
+    const lane = 'keeper-setup'
+    await closeLaneTabs(lane)
+    await call('new_tab', { url: base.home }, { lane })
+    await sleep(8000)
+    const raw = await call('list_accounts', {}, { lane })
+    await closeLaneTabs(lane)
+    let list = []
+    try {
+      list = JSON.parse(raw)
+    } catch {}
+    const labels = [...new Set(list.map((a) => a.label).filter(Boolean))]
+    if (!labels.length) throw new Error('키마스터에서 이 사이트 계정을 찾지 못함: ' + raw.slice(0, 120))
+    const prefix = (base.baseId ?? base.id).toLowerCase()
+    const accounts = labels.map((label, i) => ({ profile: `${prefix}-${i + 1}`, accountLabel: label }))
+    const file = join(HERE, 'sites.json')
+    const j = JSON.parse(readFileSync(file, 'utf8'))
+    const t = j.sites.find((x) => x.id === (base.baseId ?? base.id))
+    t.accounts = accounts
+    writeFileSync(file, JSON.stringify(j, null, 2), 'utf8')
+    say(`${labels.length}개 계정에 프로필을 배정했습니다: ` + accounts.map((a) => a.profile).join(', '))
+    return
+  }
   if (cmd === 'test-relogin') {
     const ok = await testRelogin(opt('--site'))
     log(ok ? '시험 통과: 로그아웃 → 복구 → 로그인 확인' : '시험 실패')
