@@ -25,6 +25,21 @@ const LOG_FILE = join(DATA_DIR, 'keeper.log')
 mkdirSync(DATA_DIR, { recursive: true })
 
 const cfg = JSON.parse(readFileSync(join(HERE, 'sites.json'), 'utf8'))
+// 한 사이트에 계정이 여럿이면 계정마다 프로필(쿠키 저장소)을 나눠 따로 점검·복구한다.
+// sites.json 의 site.accounts = [{ profile, accountLabel? }] — 키마스터 계정 라벨은 프로필 이름과 같게 두면 login 도구가 자동으로 고른다
+cfg.sites = cfg.sites.flatMap((site) => {
+  if (!Array.isArray(site.accounts) || site.accounts.length === 0) return [{ ...site, baseId: site.id, laneKey: site.id }]
+  return site.accounts.map((acc, i) => ({
+    ...site,
+    accounts: undefined,
+    baseId: site.id,
+    id: `${site.id}/${acc.profile}`,
+    laneKey: `${site.id}-${i + 1}`.replace(/[^A-Za-z0-9_.@-]/g, '_'),
+    label: `${site.label}(${acc.profile})`,
+    profile: acc.profile,
+    relogin: site.relogin ? { ...site.relogin, accountLabel: acc.accountLabel ?? acc.profile } : site.relogin
+  }))
+})
 const DEF = cfg.defaults
 
 const now = () => Date.now()
@@ -76,7 +91,7 @@ const nameMatches = (name, marker) =>
 const hasMarker = (els, markers = []) => els.some((e) => markers.some((m) => nameMatches(e.name, m)))
 
 // --- 레인 탭 ---------------------------------------------------------------
-const laneOf = (site) => `keeper-${site.id}`
+const laneOf = (site) => `keeper-${site.laneKey ?? site.id}`
 const tabIdOf = (r) => r.match(/[0-9a-f]{8}-[0-9a-f-]{27}/)?.[0]
 
 async function closeLaneTabs(lane) {
@@ -379,7 +394,7 @@ async function checkOnceInner({ only, dry = false } = {}) {
   })
   if (!tools) throw new BridgeDown('브릿지가 응답하지 않습니다')
 
-  const sites = cfg.sites.filter((s) => !only || s.id === only)
+  const sites = cfg.sites.filter((s) => !only || s.id === only || s.baseId === only)
   const naverSite = cfg.sites.find((s) => s.role === 'naver')
   let naverIn = null // true | false | null(모름)
 
