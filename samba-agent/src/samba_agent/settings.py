@@ -4,7 +4,9 @@ import os
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr, field_validator
+import json
+
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # 이 파일 기준 samba-agent/ 폴더 — registry.yaml 과 rules/ 가 있는 곳
@@ -21,7 +23,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 
     bridge_url: str = Field(default='http://127.0.0.1:47811', alias='SAMBA_BRIDGE_URL')
-    bridge_token: SecretStr = Field(alias='SAMBA_BRIDGE_TOKEN')
+    # 비어 있으면 앱 설정 파일(%APPDATA%\SAMBA Browser\config.json 의 bridgeToken)에서 실행 때 읽는다 — .env 에 복사하지 않는다
+    bridge_token: SecretStr = Field(default=SecretStr(''), alias='SAMBA_BRIDGE_TOKEN')
     harness_env: Literal['dev', 'staging', 'prod'] = Field(default='dev', alias='HARNESS_ENV')
     langsmith_api_key: SecretStr | None = Field(default=None, alias='LANGSMITH_API_KEY')
     slack_bot_token: SecretStr | None = Field(default=None, alias='SLACK_BOT_TOKEN')
@@ -92,6 +95,21 @@ class Settings(BaseSettings):
     export_wait_s: float = Field(default=60.0, ge=0, alias='SAMBA_EXPORT_WAIT_S')
     # 입력 작업자가 맡을 대상(쉼표). 비우면 어댑터를 만들지 않는다. 예: shopmine
     export_targets: str = Field(default='', alias='SAMBA_EXPORT_TARGETS')
+
+    @model_validator(mode='after')
+    def _bridge_token_from_app(self) -> 'Settings':
+        """토큰을 따로 주지 않았으면 같은 PC 앱의 설정 파일에서 읽는다(없으면 설정 오류)."""
+        if self.bridge_token.get_secret_value():
+            return self
+        cfg = Path(os.environ.get('SAMBA_BROWSER_CONFIG') or (Path(os.environ.get('APPDATA', '')) / 'SAMBA Browser' / 'config.json'))
+        try:
+            token = str(json.loads(cfg.read_text(encoding='utf-8')).get('bridgeToken') or '')
+        except (OSError, ValueError):
+            token = ''
+        if not token:
+            raise ValueError('SAMBA_BRIDGE_TOKEN 이 없고 앱 설정(config.json)에서도 브릿지 토큰을 읽지 못했다')
+        self.bridge_token = SecretStr(token)
+        return self
 
     @property
     def export_target_list(self) -> tuple[str, ...]:

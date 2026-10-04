@@ -23,10 +23,21 @@ def test_비밀은_문자열로_새지_않는다(monkeypatch):
     assert s.bridge_token.get_secret_value() == 'abcd' * 16
 
 
-def test_토큰이_없으면_실패한다(monkeypatch):
+def test_토큰이_없으면_실패한다(monkeypatch, tmp_path):
     monkeypatch.delenv('SAMBA_BRIDGE_TOKEN', raising=False)
+    monkeypatch.setenv('SAMBA_BROWSER_CONFIG', str(tmp_path / 'none.json'))  # 이 PC 의 실제 앱 설정을 보지 않는다
     with pytest.raises(ValidationError):
         load_settings(env_file=None)
+
+
+def test_토큰이_없으면_앱_설정_파일에서_읽는다(monkeypatch, tmp_path):
+    monkeypatch.delenv('SAMBA_BRIDGE_TOKEN', raising=False)
+    cfg = tmp_path / 'config.json'
+    cfg.write_text('{"bridgeToken": "' + 'ef' * 32 + '"}', encoding='utf-8')
+    monkeypatch.setenv('SAMBA_BROWSER_CONFIG', str(cfg))
+    s = load_settings(env_file=None)
+    assert s.bridge_token.get_secret_value() == 'ef' * 32
+    assert 'efef' not in repr(s)
 
 
 def test_실패_사유는_스펙_9종에_결제_중단을_더한_10종이다():
