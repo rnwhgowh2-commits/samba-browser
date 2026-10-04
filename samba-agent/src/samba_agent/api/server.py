@@ -4,6 +4,7 @@
 쓰기는 규칙 파일 수정 하나뿐이고, 고치면 새 harness_version 이 된다.
 """
 
+import hmac
 import json
 import os
 import tempfile
@@ -31,11 +32,13 @@ def build_app(
     version: Callable[[], str],
     report_dir: Path | None = None,
     approve: Callable[[str, bool, str, str | None], object] | None = None,
+    approve_token: str = '',
 ) -> Callable:
     """WSGI 앱. 라우팅이 몇 개뿐이라 프레임워크를 들이지 않는다.
 
     approve 는 승인 대기 중인 주문을 깨우는 콜러블(worker.resume) — 슬랙이 없을 때 사람이 승인/거절을
-    넣는 유일한 경로다(POST /approve). 127.0.0.1 에서만 받는다.
+    넣는 유일한 경로다(POST /approve). 127.0.0.1 에서만 받고, 헤더 X-Approve-Token 이 설정(SAMBA_APPROVE_TOKEN)과
+    같아야 한다 — 토큰을 정하지 않으면 이 경로는 닫혀 있다(같은 PC 의 아무 프로세스나 결제를 승인하지 못하게).
     """
     # 판정 산출물 위치는 gate·eval 과 같은 설정 하나로 정해진다(리뷰 지적 — I4)
     reports = report_dir if report_dir is not None else root / 'ops' / 'reports'
@@ -54,7 +57,7 @@ def build_app(
         elif req.method == 'PUT' and path.startswith('/graph/rules/'):
             resp = _put_rules(reg, root, version, path[len('/graph/rules/') :], req)
         elif req.method == 'POST' and path == '/approve':
-            resp = _post_approve(approve, req)
+            resp = _post_approve(approve, approve_token, req)
         else:
             resp = _json({'error': 'not found'}, 404)
         return resp(environ, start_response)
@@ -216,7 +219,7 @@ def _candidate(reports: Path, version: str) -> dict[str, object] | None:
 
 
 def _post_approve(
-    approve: Callable[[str, bool, str, str | None], object] | None, req: Request
+    approve: Callable[[str, bool, str, str | None], object] | None, token: str, req: Request
 ) -> Response:
     """승인/거절 — 본문 {"order_no", "approved": true|false, "by", "stage"(선택)}.
 
@@ -224,6 +227,12 @@ def _post_approve(
     """
     if approve is None:
         return _json({'error': 'approval channel not wired'}, 503)
+    # 기본 닫힘: 토큰이 설정되지 않았거나 헤더가 다르면 승인하지 않는다(상수 시간 비교)
+    if not token:
+        return _json({'error': 'approve token not configured'}, 503)
+    given = req.headers.get('X-Approve-Token', '')
+    if not hmac.compare_digest(given.encode('utf-8'), token.encode('utf-8')):
+        return _json({'error': 'unauthorized'}, 401)
     try:
         body = json.loads(req.get_data(as_text=True) or '{}')
     except ValueError:

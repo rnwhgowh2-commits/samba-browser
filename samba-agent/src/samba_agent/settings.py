@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     # 결제에 쓸 수 있는 결제 제공자(쉼표, 비우면 키마스터에 있는 것 전부). 예: site,musinsapay
     allowed_pay_providers: str = Field(default='', alias='SAMBA_ALLOWED_PAY_PROVIDERS')
     # True 면 결제 승인 요청을 사람 대신 즉시 승인한다(사용자가 자동 이행을 켠 경우만)
+    # POST /approve 인증 토큰(헤더 X-Approve-Token). 비어 있으면 그 경로는 닫혀 있다
+    approve_token: SecretStr = Field(default=SecretStr(''), alias='SAMBA_APPROVE_TOKEN')
     auto_approve: bool = Field(default=False, alias='SAMBA_AUTO_APPROVE')
     # 자동 승인하지 않고 사람 승인을 받을 결제수단(쉼표, 표시 이름 일부) — 실결제 검증 전 수단(페이코 2026-09-25)
     manual_approve_methods: str = Field(default='', alias='SAMBA_MANUAL_APPROVE_METHODS')

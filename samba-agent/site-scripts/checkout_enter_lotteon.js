@@ -1,4 +1,9 @@
 
+// 롯데온 결제창 진입. 인자 {card, dryRun?, expect:{name, option, selected, product_no}, amount?, tab?}
+// 안전(2026-10-04): dryRun 이면 '결제하기'를 누르기 직전에 멈춘다(예전엔 시험 모드에서도 눌러 네이버페이 '동의하고 결제하기'까지 갔다).
+// 실결제인데 expect 가 없으면 누르지 않는다.
+const dry = !!(args.dryRun || args.dry_run);
+if (!dry && !(args.expect && (typeof args.expect === 'string' ? args.expect : args.expect.name))) return {ok:false, error:'no expect — refuse to pay without an order-form check'};
 const card = args.card || '';
 const cardCompanies=['롯데카드','신한카드','KB국민카드','삼성카드','현대카드','BC카드','하나카드','씨티카드','우리BC카드','우리카드','NH농협카드','카카오뱅크','광주카드'];
 const simplePays=['카카오페이','네이버페이','토스페이','삼성페이','휴대폰결제','충전결제','퀵계좌이체','온누리상품권'];
@@ -30,6 +35,7 @@ if (mc) {
 await sleep(600);
 const payId = await page.idOf('결제하기');
 if (payId<0) return {ok:false, error:'결제하기 button not found', method};
+if (dry) return {ok:true, dry:true, method, note:'dry run — pay button '+payId+' not clicked'};
 await page.click(payId);
 await sleep(3000);
 // 네이버페이는 같은 탭에서 m.pay.naver.com 으로 넘어가 '동의하고 결제하기' 뒤 비밀번호 키패드가 뜬다(팝업 아님)

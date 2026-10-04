@@ -6,6 +6,7 @@
 """
 
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, urlsplit
@@ -120,6 +121,15 @@ KEYPAD_QUERY = '비밀번호'
 # 시험 입력(dry-run) 응답 표시. 앱은 'refused: dry-run …'(폰) · 'refused: DRY_RUN …'(웹 키패드)로
 # 돌려준다 — refusal.py 가 거절로 분류하지 않고 그대로 넘겨 준다
 DRY_RUN_MARKERS = ('dry-run', 'dry_run')
+
+# 한 건 결제 금액 상한(원). 실결제에서 이 금액을 넘으면 결제하지 않고 사람에게 넘긴다(2026-10-04 안전 보강).
+# 0 이하로 두면 상한을 끈다. 환경변수 SAMBA_MAX_PAY_AMOUNT 로 조정한다
+def _max_pay_amount() -> int:
+    try:
+        return int(os.environ.get('SAMBA_MAX_PAY_AMOUNT', '500000'))
+    except ValueError:
+        return 500000
+
 
 # find_elements 응답 한 줄 형식: `[12] textbox "주문자 이름"`(src/shared/snapshot.ts)
 ELEMENT_ID_RE = re.compile(r'^\[(\d+)\]', re.MULTILINE)
@@ -1170,6 +1180,18 @@ class PayerAgent(AgentBase):
         if bought is not None and bought.allow_department:
             payload['allow_department'] = True  # SSG: 신세계백화점(6009) 상품도 결제한다(사용자 2026-09-27)
         amount = a.handoff.get('paid')
+        cap = _max_pay_amount()
+        if (
+            not a.dry_run
+            and cap > 0
+            and isinstance(amount, int | float)
+            and not isinstance(amount, bool)
+            and amount > cap
+        ):
+            raise AgentFailure(
+                'needs_human',
+                f'결제 금액 {int(amount):,}원이 상한 {cap:,}원을 넘어 결제하지 않았다(SAMBA_MAX_PAY_AMOUNT)',
+            )
         if isinstance(amount, int | float) and not isinstance(amount, bool) and amount > 0:
             payload['amount'] = amount
         if a.handoff.get('order_tab'):

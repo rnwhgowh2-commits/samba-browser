@@ -205,15 +205,41 @@ def test_승인은_대기_중인_주문만_깨운다(tmp_path):
         root=root,
         version=lambda: 'vtest',
         approve=approve,
+        approve_token='tok',
     )
     c = Client(app)
-    r = c.post('/approve', data=json.dumps({'order_no': 'A1', 'approved': True, 'by': 'me', 'stage': 'pay'}))
+    H = {'X-Approve-Token': 'tok'}
+    r = c.post('/approve', data=json.dumps({'order_no': 'A1', 'approved': True, 'by': 'me', 'stage': 'pay'}), headers=H)
     assert r.status_code == 200 and r.get_json()['state'] == 'running'
     assert calls[-1] == ('A1', True, 'me', 'pay')
-    assert c.post('/approve', data=json.dumps({'order_no': 'NOPE', 'approved': False, 'by': 'me'})).status_code == 409
-    assert c.post('/approve', data=json.dumps({'order_no': 'A1', 'approved': 'yes', 'by': 'me'})).status_code == 400
-    assert c.post('/approve', data='{').status_code == 400
+    assert c.post('/approve', data=json.dumps({'order_no': 'NOPE', 'approved': False, 'by': 'me'}), headers=H).status_code == 409
+    assert c.post('/approve', data=json.dumps({'order_no': 'A1', 'approved': 'yes', 'by': 'me'}), headers=H).status_code == 400
+    assert c.post('/approve', data='{', headers=H).status_code == 400
+    # 토큰이 없거나 틀리면 승인 콜러블이 호출되지 않는다
+    n = len(calls)
+    body = json.dumps({'order_no': 'A1', 'approved': True, 'by': 'me'})
+    assert c.post('/approve', data=body).status_code == 401
+    assert c.post('/approve', data=body, headers={'X-Approve-Token': 'bad'}).status_code == 401
+    assert len(calls) == n
 
 
 def test_승인_경로가_배선되지_않으면_503(client):
     assert client.post('/approve', data=json.dumps({'order_no': 'A1', 'approved': True, 'by': 'me'})).status_code == 503
+
+
+def test_승인_토큰이_설정되지_않으면_닫혀_있다(tmp_path):
+    root = tmp_path / 'root'
+    shutil.copytree(DEFAULT_ROOT / 'rules', root / 'rules')
+    shutil.copy(DEFAULT_ROOT / 'registry.yaml', root / 'registry.yaml')
+    shutil.copy(DEFAULT_ROOT / 'sources.yaml', root / 'sources.yaml')
+    called = []
+    app = build_app(
+        reg=Registry.load(root),
+        queue=JobQueue(tmp_path / 'j.sqlite'),
+        releases=ReleaseStore(tmp_path / 'r.sqlite'),
+        root=root,
+        version=lambda: 'vtest',
+        approve=lambda *a: called.append(a),
+    )
+    r = Client(app).post('/approve', data=json.dumps({'order_no': 'A1', 'approved': True, 'by': 'me'}), headers={'X-Approve-Token': ''})
+    assert r.status_code == 503 and not called
