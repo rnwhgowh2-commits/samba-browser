@@ -82,7 +82,20 @@ export interface CookieStoreLike {
 }
 
 // 두 단계 공개 접미사(이 아래 한 단계가 등록 도메인이다). 쓰는 사이트 기준으로만 둔다
-const TWO_LEVEL_SUFFIXES = new Set(['co.kr', 'or.kr', 'ne.kr', 'go.kr', 'ac.kr', 're.kr', 'pe.kr', 'com.cn', 'co.jp', 'com.tw', 'com.au', 'co.uk'])
+const TWO_LEVEL_SUFFIXES = new Set([
+  'co.kr',
+  'or.kr',
+  'ne.kr',
+  'go.kr',
+  'ac.kr',
+  're.kr',
+  'pe.kr',
+  'com.cn',
+  'co.jp',
+  'com.tw',
+  'com.au',
+  'co.uk'
+])
 
 /** 등록 도메인(예: api.musinsapayments.com → musinsapayments.com, www.shoemarker.co.kr → shoemarker.co.kr) */
 export function registrableDomain(host: string): string {
@@ -125,7 +138,9 @@ function restoreDetails(c: Cookie): CookiesSetDetails {
 function sentTo(c: Cookie, host: string, path: string, name: string): boolean {
   if (c.name !== name || !c.domain) return false
   const d = c.domain.toLowerCase()
-  const domainOk = c.hostOnly ? d === host : host === d.replace(/^\./, '') || host.endsWith(d.startsWith('.') ? d : `.${d}`)
+  const domainOk = c.hostOnly
+    ? d === host
+    : host === d.replace(/^\./, '') || host.endsWith(d.startsWith('.') ? d : `.${d}`)
   const p = c.path ?? '/'
   return domainOk && (path === p || path.startsWith(p.endsWith('/') ? p : `${p}/`))
 }
@@ -149,6 +164,66 @@ export async function removeStaleHostCopies(store: CookieStoreLike): Promise<num
   return removed
 }
 
+// === 쿠키 저장소 주기 저장 ===================================================
+// 크로미움은 쿠키를 메모리에 두고 30초 안팎으로 모아 디스크에 쓴다. 정상 종료 때는 마저 쓰지만 작업 관리자 종료·
+// 강제 재시작·정전·크래시는 마지막 몇십 초를 잃어 방금 한 로그인이 사라진다. 그래서 켜 있는 동안 주기적으로
+// flushStore 를 불러 디스크에 내려 둔다(쿠키 값은 건드리지 않는다).
+/** 주기 저장 간격 */
+export const COOKIE_FLUSH_INTERVAL_MS = 15_000
+
+const flushTargets = new Set<{ cookies: { flushStore(): Promise<void> } }>()
+let flushTimer: ReturnType<typeof setInterval> | null = null
+
+let flushing: Promise<number> | null = null
+let lastFailed = 0
+
+/**
+ * 등록된 모든 파티션의 쿠키 저장소를 지금 디스크에 쓴다. 실패한 개수를 돌려준다.
+ * 파티션은 서로 기다리지 않게 동시에 쓰고(한 곳이 느려도 나머지는 그 주기에 저장된다), 이전 저장이 아직 끝나지
+ * 않았으면 새로 시작하지 않고 그 작업을 그대로 기다린다(호출이 쌓이지 않는다).
+ * 실패는 로그로 남긴다 — 같은 개수로 계속 실패하는 동안은 처음 한 번만(로그가 넘치지 않게).
+ */
+export function flushAllCookieStores(): Promise<number> {
+  if (flushing) return flushing
+  const run = async (): Promise<number> => {
+    const results = await Promise.allSettled(
+      [...flushTargets].map((ses) => ses.cookies.flushStore())
+    )
+    const failed = results.filter((r) => r.status === 'rejected').length
+    if (failed !== lastFailed) {
+      if (failed > 0)
+        console.warn(`쿠키 저장소 디스크 저장 실패 ${failed}/${results.length}개 파티션`)
+      else console.log('쿠키 저장소 디스크 저장 정상 복구')
+      lastFailed = failed
+    }
+    return failed
+  }
+  flushing = run().finally(() => {
+    flushing = null
+  })
+  return flushing
+}
+
+/** 이 세션을 주기 저장 대상에 넣는다(타이머는 하나만 돈다) */
+export function registerCookieFlush(
+  ses: { cookies: { flushStore(): Promise<void> } },
+  intervalMs: number = COOKIE_FLUSH_INTERVAL_MS
+): void {
+  flushTargets.add(ses)
+  if (flushTimer) return
+  flushTimer = setInterval(() => void flushAllCookieStores(), intervalMs)
+  flushTimer.unref?.()
+}
+
+/** 시험용: 등록·타이머를 비운다 */
+export function resetCookieFlushForTest(): void {
+  flushTargets.clear()
+  flushing = null
+  lastFailed = 0
+  if (flushTimer) clearInterval(flushTimer)
+  flushTimer = null
+}
+
 /** 앱의 파티션 세션에 붙인다 */
 export function installSessionCookieKeeper(ses: Session): void {
   // 예전 코드가 남긴 복제본부터 정리(실패해도 앱은 계속 — 이름·값은 남기지 않는다)
@@ -156,7 +231,10 @@ export function installSessionCookieKeeper(ses: Session): void {
     .then((n) => {
       if (n) console.log(`세션 쿠키 복제본 ${n}개 정리`)
     })
-    .catch((e: unknown) => console.warn('세션 쿠키 복제본 정리 실패', e instanceof Error ? e.message : String(e)))
+    .catch((e: unknown) =>
+      console.warn('세션 쿠키 복제본 정리 실패', e instanceof Error ? e.message : String(e))
+    )
+  registerCookieFlush(ses)
   keepSessionCookies(ses.cookies, {
     // 값은 남기지 않는다 — 어느 쿠키인지 이름만
     onError: (name) => console.warn(`세션 쿠키 유지 실패: ${name}`)
