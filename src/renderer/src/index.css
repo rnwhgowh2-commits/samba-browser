@@ -89,6 +89,12 @@ body,
   height: 100%;
   margin: 0;
 }
+/* 앱 화면은 창에 꽉 차야 한다. 문서 자체가 스크롤되면 탭 줄·주소창이 위로 밀려 잘리고,
+   뷰포트 좌표로 맞추는 웹 화면(네이티브 뷰)도 그만큼 어긋난다 */
+html,
+body {
+  overflow: hidden;
+}
 body {
   font-family:
     'Pretendard Variable',

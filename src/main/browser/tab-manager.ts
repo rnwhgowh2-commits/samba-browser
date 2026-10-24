@@ -44,6 +44,7 @@ import { PopupRegistry, type PopupEntry } from './popups'
 import { splitBehind, stackOrder } from './behind-views'
 import { buildTargets, pickAgentTargetId, type AgentTarget } from './targets'
 import { getFaviconService, type FaviconResponse } from '../favicon/service'
+import { nextZoomLevel, zoomKeyAction, type ZoomAction } from './zoom'
 
 export interface Tab {
   id: string
@@ -329,6 +330,31 @@ export class TabManager {
     wc.on('before-input-event', (e, input) => {
       if (this.inputHandler?.(input)) e.preventDefault()
     })
+  }
+
+  // === 확대·축소 ============================================================
+  // 메뉴를 숨겨 둔 창에서는 Ctrl+± / Ctrl+휠이 저절로 동작하지 않아 직접 처리한다.
+  // 배율은 Chromium 이 호스트별로 세션에 기억한다(사이트마다 따로, 크롬과 같다)
+  private attachZoom(wc: WebContents): void {
+    wc.on('before-input-event', (e, input) => {
+      const action = zoomKeyAction(input)
+      if (!action) return
+      e.preventDefault()
+      this.applyZoom(wc, action)
+    })
+    // Ctrl+휠 — 기본 동작이 막혀 있어 'zoom-changed' 로 방향만 받는다
+    wc.on('zoom-changed', (_e, direction) => this.applyZoom(wc, direction))
+  }
+
+  private applyZoom(wc: WebContents, action: ZoomAction): void {
+    if (wc.isDestroyed()) return
+    wc.setZoomLevel(nextZoomLevel(wc.getZoomLevel(), action))
+  }
+
+  /** 렌더러(사이드바 등)에 포커스가 있을 때 누른 Ctrl+± 도 보이는 탭에 적용한다 */
+  zoomActive(action: ZoomAction): void {
+    const tab = this.active()
+    if (tab) this.applyZoom(tab.view.webContents, action)
   }
 
   // === 마우스 제스처 ========================================================
@@ -714,6 +740,7 @@ export class TabManager {
     this.tabs.push(tab)
     const wc = view.webContents
     this.attachInputHandler(wc)
+    this.attachZoom(wc)
     this.contextMenuHook?.(wc)
     // 상태 변화 이벤트마다 리스너에 통지 (개별 등록: on() 오버로드가 유니온 리터럴을 받지 않음)
     wc.on('did-start-loading', () => this.emit())

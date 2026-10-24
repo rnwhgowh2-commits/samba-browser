@@ -25,6 +25,7 @@ import * as os from 'node:os'
 import { IPC, type IpcResult, type Layout, type Settings } from '../../shared/ipc'
 import { defaultTabUrl } from '../../shared/settings'
 import type { TabManager } from '../browser/tab-manager'
+import { zoomKeyAction } from '../browser/zoom'
 import { ClosedTabStack, newProfileName, runGesture, type GestureDeps } from '../browser/gestures'
 import { SettingsStore } from '../settings/store'
 import { setOcrEnabled } from '../agent/tools-ocr'
@@ -1187,6 +1188,12 @@ export function registerIpc(
     handleWorkspaceShortcut(input) || handleCaptureShortcut(input)
   win.webContents.on('before-input-event', (e, input) => {
     if (handleWindowShortcut(input)) e.preventDefault()
+    // 사이드바 등 앱 화면에 포커스가 있어도 Ctrl+± 는 보이는 탭을 확대·축소한다
+    const zoom = zoomKeyAction(input)
+    if (zoom) {
+      e.preventDefault()
+      tabs.zoomActive(zoom)
+    }
   })
   tabs.setInputHandler(handleWindowShortcut)
 

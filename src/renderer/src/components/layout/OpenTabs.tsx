@@ -23,7 +23,8 @@ export function OpenTabs(): React.JSX.Element {
     return <div className="px-2 py-1 text-[11px] text-[var(--text3)]">{t('tab.empty')}</div>
 
   return (
-    <ul className="flex flex-col">
+    // 탭이 많아도 사이드바가 창보다 길어지지 않게 이 목록만 스크롤한다(최대 화면 높이의 45%)
+    <ul className="flex min-h-0 max-h-[45vh] flex-col overflow-y-auto">
       {tabs.map((tab) => {
         const label = tabRowLabel(tab, t('tab.untitled'))
         const host = tabFaviconHost(tab.url)

@@ -26,7 +26,8 @@ export function ChatList(): React.JSX.Element {
   }, [loadChats])
 
   return (
-    <div className="flex flex-col">
+    // 대화가 많아도 사이드바가 창보다 길어지지 않게 이 목록만 스크롤한다
+    <div className="flex min-h-0 max-h-[25vh] flex-col overflow-y-auto">
       <button
         type="button"
         disabled={locked}
