@@ -2,12 +2,14 @@ import {
   app,
   BrowserWindow,
   WebContentsView,
+  safeStorage,
   session,
   type Input,
   type Session,
   type WebContents
 } from 'electron'
-import { join } from 'path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { dirname, join } from 'path'
 import { enableExtensionServiceWorkerSupport } from '../extensions/cookies-bridge'
 import type { ExtensionTabsProvider } from '../extensions/tabs-bridge'
 import { randomUUID } from 'crypto'
@@ -26,6 +28,19 @@ import type { PermissionMode, SearchEngine } from '../../shared/settings'
 import { applyMobileEmulation, clearMobileEmulation, MOBILE_WIDTH } from './emulation'
 import { installWebstoreNavigatorUserAgent, installWebstoreUserAgent } from './webstore-ua'
 import { installSessionCookieKeeper } from './session-cookies'
+import { setCookieClearTarget } from './cookie-clear'
+import {
+  createProfileLabelReader,
+  parseSitesAccountLabels,
+  parseSitesProfileSites,
+  parseSitesWorkspace
+} from './profile-labels'
+import {
+  cookieSnapshotReady,
+  installCookieSnapshot,
+  legacySnapshotFileName,
+  snapshotFileName
+} from './session-cookie-snapshot'
 import { installDialogHandler, isAutomationActive } from './dialogs'
 import {
   isAutomation,
@@ -41,10 +56,30 @@ import {
   shouldHoldVisible
 } from './visible-guard'
 import { PopupRegistry, type PopupEntry } from './popups'
-import { splitBehind, stackOrder } from './behind-views'
+import {
+  DISCARD_IDLE_MS,
+  DISCARDED_PAGE_URL,
+  discardableProbe,
+  discardableUrl,
+  hotLaneIds,
+  PAGE_KEEP_PROBE_JS,
+  splitBehind,
+  stackOrder
+} from './behind-views'
 import { buildTargets, pickAgentTargetId, type AgentTarget } from './targets'
 import { getFaviconService, type FaviconResponse } from '../favicon/service'
 import { nextZoomLevel, zoomKeyAction, type ZoomAction } from './zoom'
+import { HealGate, paintDiag, shortId, stackMismatch, topTabId } from './paint-diag'
+
+// 보이는 탭이 맨 위가 아닌 층 어긋남을 확인하는 주기
+const STACK_CHECK_MS = 5000
+// 비워 둔 탭을 다시 열 때 도구 호출이 기다리는 최대 시간 — 부하가 높으면 새 렌더러가 수십 초 늦게 뜬다(도구 제한 90초 안)
+const RESTORE_WAIT_MS = 45_000
+// 페이지를 비우기 전 페이지 안 확인(누른 적·입력 중)의 제한 시간
+const DISCARD_PROBE_MS = 3000
+// 다시 연 페이지의 첫 화면을 기다리는 최대 시간과 그 확인 스크립트(두 프레임 지나면 끝)
+const FIRST_PAINT_WAIT_MS = 1500
+const FIRST_PAINT_JS = 'new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))'
 
 export interface Tab {
   id: string
@@ -54,8 +89,18 @@ export interface Tab {
   // 이 탭을 window.open 으로 띄운 탭. 결제창처럼 별도 WebContents 로 열리는 팝업을
   // 부모 탭에서 다시 찾기 위해 남긴다(결제 성공 리다이렉트 확인에 쓴다)
   openerId?: string
+  // 열 때 요청한 주소. 페이지가 아직 안 떠서 현재 주소가 비어 있을 때 사이드바가 소싱처를 알아보는 데 쓴다
+  openUrl?: string
+  // 이 탭이 쓰는 세션 파티션('persist:ws2-musinsa-1'). 자동화 레인 탭은 현재 작업공간과 무관하게 고정 작업공간을 쓴다
+  partition?: string
   // 지금 주소에 맞는 웹스토어 UA 를 다시 거는 함수(모바일 모드 해제 뒤 호출)
   refreshWebstoreUa?: () => void
+  // 메모리를 아끼려고 페이지를 비워 둔 레인 탭의 원래 주소·제목(discardIdleLane). 다시 쓰면 restoreTab 이 연다
+  discarded?: { url: string; title: string }
+  // 원래 주소를 다시 여는 중이면 그 약속(whenRestored 가 기다린다)
+  restoring?: Promise<void>
+  // 비우지 않기로 한 주소(누른 적 있음·입력 중). 주소가 바뀌기 전에는 다시 확인하지 않는다
+  keepUrl?: string
 }
 
 /**
@@ -112,6 +157,38 @@ export function computeViewBounds(
   }
 }
 
+// 프로필 → 계정 이름표(세션 관리자가 앱 데이터 폴더에 적어 둔 profile-labels.json). 파일이 없으면 프로필 이름 그대로
+// 세션 관리자 설정(sites.json)의 계정 이름을 탭 옆에 보여 준다. 경로는 처음 쓸 때 읽는다
+let profileLabelReader: ((profile: string) => string | undefined) | null = null
+function profileLabelOf(profile: string): string | undefined {
+  profileLabelReader ??= createProfileLabelReader(
+    join(app.getAppPath(), 'tools', 'session-keeper', 'sites.json'),
+    parseSitesAccountLabels
+  )
+  return profileLabelReader(profile)
+}
+let pinnedWorkspaceReader: ((key: string) => string | undefined) | null = null
+/**
+ * 자동화 레인 탭이 쓸 파티션 접두사. sites.json 의 workspaceId 가 있으면 'persist:ws<N>-', 없으면 undefined(현재 작업공간).
+ * 사용자가 작업공간을 바꿔도 세션 관리자·레인 탭은 로그인이 들어 있는 같은 작업공간을 계속 쓴다(2026-10-24 사고)
+ */
+function pinnedAutomationPrefix(): string | undefined {
+  pinnedWorkspaceReader ??= createProfileLabelReader(
+    join(app.getAppPath(), 'tools', 'session-keeper', 'sites.json'),
+    parseSitesWorkspace
+  )
+  const id = pinnedWorkspaceReader('workspaceId')
+  return id ? `persist:ws${id}-` : undefined
+}
+let profileSiteReader: ((profile: string) => string | undefined) | null = null
+function profileSiteOf(profile: string): string | undefined {
+  profileSiteReader ??= createProfileLabelReader(
+    join(app.getAppPath(), 'tools', 'session-keeper', 'sites.json'),
+    parseSitesProfileSites
+  )
+  return profileSiteReader(profile)
+}
+
 // 이미 하드닝한 파티션 이름. session.fromPartition 은 같은 인스턴스를 돌려주므로 1회만 건다
 const hardenedPartitions = new Set<string>()
 
@@ -143,6 +220,36 @@ function hardenSession(ses: Session, partition: string): void {
   // 로그인 토큰이 세션 쿠키인 사이트(무신사)는 앱을 다시 켤 때마다 반쪽 로그인이 됐다 —
   // 크롬의 "이전 세션 이어서" 처럼 세션 쿠키에 만료를 얹어 남긴다
   installSessionCookieKeeper(ses)
+  // 로그인 토큰이 host-only 세션 쿠키인 사이트(LF몰·더현대 …)는 앱을 다시 켜면 로그아웃됐다 —
+  // 실행 중에는 암호화 파일에 모아 두고, 다음 시작 때 한 번만 되살린다
+  installSnapshot(ses, partition)
+}
+
+// 암호화 파일(safeStorage)에 보관·복원. 암호화를 못 쓰면 아무것도 저장하지 않는다
+function installSnapshot(ses: Session, partition: string): void {
+  const dir = join(app.getPath('userData'), 'session-cookies')
+  const filePath = join(dir, snapshotFileName(partition))
+  const legacy = legacySnapshotFileName(partition)
+  const legacyPath = legacy ? join(dir, legacy) : null
+  installCookieSnapshot(
+    ses,
+    {
+      read: () => {
+        if (!safeStorage.isEncryptionAvailable()) return null
+        // 새 이름 파일이 없으면 옛 이름 파일(영문 이름만)을 한 번 이어받는다
+        const src = existsSync(filePath) ? filePath : legacyPath && existsSync(legacyPath) ? legacyPath : null
+        return src ? safeStorage.decryptString(readFileSync(src)) : null
+      },
+      write: (text) => {
+        if (!safeStorage.isEncryptionAvailable()) return false
+        mkdirSync(dirname(filePath), { recursive: true })
+        writeFileSync(filePath, safeStorage.encryptString(text))
+        return true
+      }
+    },
+    // 값은 남기지 않는다 — 어느 단계가 실패했는지만
+    { onError: (what) => console.warn(`로그인 쿠키 보관 실패: ${what}`) }
+  )
 }
 
 // 리다이렉트·페이지 내 이동으로 금지 스킴에 도달하는 경로까지 막는다.
@@ -191,10 +298,21 @@ export class TabManager {
   private behindIds: string[] = []
   // 레인(lane-tabs)이 연 탭 — 전역 자동화 대상이 아니어도 뒤 층에 붙여 둔다
   private laneIds = new Set<string>()
+  // 레인 탭을 마지막으로 쓴 시각과 진행 중인 도구 호출이 붙잡은 레인 탭 집합 — 쉬는 레인 탭은 뒤 층에서 떼어
+  // 그리지 않게 한다(hotLaneIds)
+  private laneTouchedAt = new Map<string, number>()
+  private laneHolds = new Map<symbol, ReadonlySet<string>>()
+  // 페이지 비우기 확인이 진행 중이면 다음 점검은 건너뛴다(한 번에 한 탭)
+  private discarding = false
   // 팝업이 새로 열렸을 때 알리는 구독자(AI 도구가 "팝업이 열렸다"를 결과에 붙인다)
   private popupOpenedListeners: Array<(target: AgentTarget) => void> = []
   // 로그인 게이트: 계정 로그인 전에는 탭 뷰(네이티브)를 화면에서 치운다 — 렌더러가 가리는 것만으로는 안 보인다
   private gateHidden = false
+  // withFront 가 다른 탭을 잠깐 맨 위로 올려 둔 동안은 층 점검이 어긋남으로 보지 않는다
+  private frontDepth = 0
+  // 층 어긋남 자동 복구 횟수 제한과 점검 타이머(paint-diag.ts)
+  private healGate = new HealGate()
+  private stackTimer: ReturnType<typeof setInterval> | null = null
   private layout: Layout = {
     x: 0,
     y: 0,
@@ -241,6 +359,8 @@ export class TabManager {
   // === 마우스 제스처 끝 ======================================================
 
   constructor(private win: BrowserWindow) {
+    // 쿠키 삭제 입구(브릿지 /cookies/clear)가 이 탭 관리자의 세션을 찾는다
+    setCookieClearTarget(this)
     // 창이 닫히면 남은 리스너·탭을 정리해 파괴된 창에 접근하지 않게 한다
     win.once('closed', () => this.dispose())
     // 창 크기가 바뀌면 렌더러 보고를 기다리지 않고 메인이 먼저 맞춘다.
@@ -251,6 +371,14 @@ export class TabManager {
     // 끝난 뒤에 한 번 더 맞춘다
     win.on('maximize', () => this.applyBounds())
     win.on('unmaximize', () => this.applyBounds())
+    // 보이는 탭이 다른 탭 뒤로 밀려 흰 화면만 보이는 상태를 찾아 바로잡는다
+    // 같은 타이머로 한동안 안 쓴 레인 탭을 뒤 층에서 뗀다
+    this.stackTimer = setInterval(() => {
+      this.sleepIdleLanes()
+      this.discardIdleLane()
+      this.checkStack()
+    }, STACK_CHECK_MS)
+    this.stackTimer.unref()
   }
 
   onChange(cb: (tabs: TabInfo[]) => void): void {
@@ -439,6 +567,8 @@ export class TabManager {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    if (this.stackTimer !== null) clearInterval(this.stackTimer)
+    this.stackTimer = null
     this.listeners = []
     this.activatedListeners = []
     this.closedListeners = []
@@ -448,6 +578,8 @@ export class TabManager {
     this.automationTabId = null
     this.behindIds = []
     this.laneIds.clear()
+    this.laneTouchedAt.clear()
+    this.laneHolds.clear()
     this.focusedPopupId = null
     // 부모 창이 사라졌는데 결제창만 남아 떠 있지 않게 팝업도 함께 파괴한다
     this.popups.destroyAll()
@@ -458,11 +590,14 @@ export class TabManager {
       .filter((t) => isTabAlive(t))
       .map((t) => ({
         id: t.id,
-        url: t.view.webContents.getURL(),
-        title: t.view.webContents.getTitle(),
+        // 비워 둔 탭은 원래 주소·제목을 보여 준다(사이드바 소싱처 묶음·세션 관리자 탭 목록이 그대로 보이게)
+        url: t.discarded?.url ?? (t.view.webContents.getURL() || t.openUrl || ''),
+        title: t.discarded?.title ?? t.view.webContents.getTitle(),
         profile: t.profile,
+        ...(profileLabelOf(t.profile) ? { profileLabel: profileLabelOf(t.profile) } : {}),
+        ...(profileSiteOf(t.profile) ? { profileSite: profileSiteOf(t.profile) } : {}),
         mobile: t.mobile,
-        loading: t.view.webContents.isLoading(),
+        loading: t.discarded ? false : t.view.webContents.isLoading(),
         active: t.id === this.activeId
       }))
   }
@@ -473,6 +608,13 @@ export class TabManager {
 
   get(id: string): Tab | null {
     return this.tabs.find((t) => t.id === id) ?? null
+  }
+
+  /** 쿠키 삭제용: 프로필의 세션. automation 이면 자동화 레인이 쓰는 고정 작업공간 쪽(없으면 현재 작업공간) */
+  sessionFor(profile: string, automation: boolean): Session {
+    const prefix = automation ? (pinnedAutomationPrefix() ?? this.partitionPrefix) : this.partitionPrefix
+    const partition = `${prefix}${profile}`
+    return this.partitionSessions.get(partition) ?? session.fromPartition(partition)
   }
 
   /** 프로필의 세션(탭과 같은 파티션). 아직 탭을 연 적 없는 프로필이어도 같은 저장소를 쓴다 */
@@ -496,7 +638,12 @@ export class TabManager {
       tabs: () =>
         this.tabs
           .filter((t) => isTabAlive(t))
-          .map((t) => ({ wc: t.view.webContents, active: t.id === this.activeId, profile: t.profile })),
+          .map((t) => ({
+            wc: t.view.webContents,
+            active: t.id === this.activeId,
+            profile: t.profile,
+            ...(t.discarded ? { shown: t.discarded } : {})
+          })),
       create: (url, profile, active) => {
         // 뒤에서 열기 — 크롬 tabs.create({active:false}) 처럼 보던 탭을 그대로 둔다
         const info = this.create({ url, profile, background: !active && this.activeId !== null })
@@ -701,7 +848,9 @@ export class TabManager {
       throw new Error(`${BLOCKED_URL_MESSAGE} (${url})`)
     }
     const profile = opts.profile ?? 'default'
-    const partition = `${this.partitionPrefix}${profile}`
+    // 레인 탭(세션 관리자·MCP 레인)은 고정 작업공간, 사람이 연 탭은 현재 작업공간
+    const prefix = opts.keepAgentTarget === true ? (pinnedAutomationPrefix() ?? this.partitionPrefix) : this.partitionPrefix
+    const partition = `${prefix}${profile}`
     const ses = session.fromPartition(partition)
     hardenSession(ses, partition)
     // 파티션 세션에도 samba:// 핸들러를 붙인다(기본 세션 등록만으로는 탭에서 안 열림)
@@ -735,6 +884,8 @@ export class TabManager {
       view,
       profile,
       mobile: opts.mobile ?? false,
+      openUrl: url,
+      partition,
       ...(opts.openerId === undefined ? {} : { openerId: opts.openerId })
     }
     this.tabs.push(tab)
@@ -743,6 +894,13 @@ export class TabManager {
     this.attachZoom(wc)
     this.contextMenuHook?.(wc)
     // 상태 변화 이벤트마다 리스너에 통지 (개별 등록: on() 오버로드가 유니온 리터럴을 받지 않음)
+    // 비워 둔 탭이 다른 경로(확장 tabs.update 등)로 새 주소로 가면 그 주소가 최신이다 — 저장해 둔 옛 주소로 되돌리지 않는다
+    wc.on('did-start-navigation', (details) => {
+      if (!tab.discarded || !details.isMainFrame || details.isSameDocument) return
+      if (details.url === DISCARDED_PAGE_URL) return
+      tab.discarded = undefined
+      this.emit()
+    })
     wc.on('did-start-loading', () => this.emit())
     wc.on('did-stop-loading', () => this.emit())
     wc.on('page-title-updated', () => this.emit())
@@ -762,6 +920,26 @@ export class TabManager {
       if (isMainFrame && code !== -3) console.error(`탭 로드 실패 ${code} ${desc}: ${failedUrl}`)
     })
     wc.on('did-navigate-in-page', () => this.emit())
+    // 렌더러가 죽거나 멈추면 그 탭이 흰 화면으로 보인다 — 원인을 사후에 알 수 있게 남긴다(paint-diag.ts)
+    wc.on('render-process-gone', (_e, details) =>
+      paintDiag('render-process-gone', {
+        tab: shortId(tab.id),
+        reason: details.reason,
+        exitCode: details.exitCode,
+        active: this.activeId === tab.id
+      })
+    )
+    // 'responsive' 는 평소에도 탭마다 몇 분 간격으로 와서(실측 2시간 235건, 'unresponsive' 는 0건) 멈췄다 풀린 경우만 남긴다
+    let hung = false
+    wc.on('unresponsive', () => {
+      hung = true
+      paintDiag('unresponsive', { tab: shortId(tab.id), active: this.activeId === tab.id })
+    })
+    wc.on('responsive', () => {
+      if (!hung) return
+      hung = false
+      paintDiag('responsive', { tab: shortId(tab.id) })
+    })
     // 문서가 바뀔 때마다 제스처 설정을 다시 밀어 준다(preload 는 매 문서마다 새로 뜬다)
     wc.on('dom-ready', () => this.sendGestureConfig(wc))
     // 탭이 실제로 받은 파비콘을 파비콘 서비스 캐시에 넣어 둔다.
@@ -862,14 +1040,34 @@ export class TabManager {
       if (!popupWin.isDestroyed() && !popupWin.isVisible()) popupWin.showInactive()
     })
     if (tab.mobile) void applyMobileEmulation(wc)
-    void wc.loadURL(url)
-    if (opts.keepAgentTarget === true) this.laneIds.add(tab.id)
+    // 보관해 둔 로그인 쿠키를 되살리는 중이면 끝난 뒤에 연다(첫 요청에 로그인 쿠키가 실리게)
+    const cookiesPending = cookieSnapshotReady(ses)
+    if (cookiesPending) {
+      // 기다리는 동안 다른 탐색(사람·자동화)이 먼저 시작됐으면 그쪽이 최신이므로 최초 주소로 덮지 않는다
+      let superseded = false
+      const onNav = (): void => {
+        superseded = true
+      }
+      wc.on('did-start-navigation', onNav)
+      void cookiesPending.then(() => {
+        wc.off('did-start-navigation', onNav)
+        if (!wc.isDestroyed() && !superseded) void wc.loadURL(url)
+      })
+    } else {
+      void wc.loadURL(url)
+    }
+    if (opts.keepAgentTarget === true) {
+      this.laneIds.add(tab.id)
+      this.laneTouchedAt.set(tab.id, Date.now())
+    }
     if (opts.background === true) {
       this.sizeHidden(tab)
     } else if (opts.keepAgentTarget === true) {
       // 레인 탭 — 레인이 제 작업 창을 쥐므로 전역 자동화 대상 표식은 그대로 둔다.
-      // 사람이 쓰는 중이면 뒤에서만 열고, 아니면 예전처럼 보여 준다
-      if (this.activeId !== null && this.holdVisible()) {
+      // 보이는 탭이 있으면 언제나 뒤에서만 연다 — 레인은 보이지 않아도 제 탭을 조작하고 캡처는 withFront 가 맡는다.
+      // (실기 2026-10-24: 사람이 60초 입력 없이 보기만 하면 세션 관리자의 계정 확인 탭이 5초마다 앞으로 올라와
+      // 보던 탭이 다른 소싱처로 바뀌었다.) 보이는 탭이 없을 때(첫 탭)만 보여 준다
+      if (this.activeId !== null && this.get(this.activeId) !== null) {
         this.sizeHidden(tab)
       } else {
         const kept = this.automationTabId
@@ -892,15 +1090,97 @@ export class TabManager {
   async withFront<T>(id: string, fn: () => Promise<T>): Promise<T> {
     const tab = this.get(id)
     if (!tab || this.win.isDestroyed() || id === this.activeId || !isTabAlive(tab)) return fn()
+    // 쉬던 레인 탭이면 먼저 깨운다 — 스로틀링을 켠 채 맨 위에 붙이고 끄면 그림이 멈춘다(sizeHidden 참고)
+    this.touchLane(id)
     const visible = this.activeId !== null ? this.get(this.activeId) : null
     this.win.contentView.addChildView(tab.view)
+    this.frontDepth++
+    const startedAt = Date.now()
+    paintDiag('front-start', { tab: shortId(id), visible: shortId(this.activeId) })
     try {
       return await fn()
     } finally {
+      this.frontDepth--
       if (!this.win.isDestroyed() && visible && isTabAlive(visible)) {
         this.win.contentView.addChildView(visible.view)
       }
+      paintDiag('front-end', { tab: shortId(id), ms: Date.now() - startedAt, ...this.stackInfo() })
     }
+  }
+
+  /** contentView 자식 순서(아래 → 위)를 탭 id 로 바꾼다. 탭이 아닌 뷰(확장 팝업 등)는 null */
+  private stackIds(): Array<string | null> {
+    if (this.win.isDestroyed()) return []
+    return this.win.contentView.children.map((child) => {
+      const tab = this.tabs.find((t) => t.view === child)
+      return tab ? tab.id : null
+    })
+  }
+
+  /** 진단 기록용 층 요약 — 맨 위 탭과 보이는 탭이 같은지, 보이는 탭 크기, 붙어 있는 뷰 수 */
+  private stackInfo(): Record<string, unknown> {
+    const order = this.stackIds()
+    const active = this.active()
+    const bounds = active && isTabAlive(active) ? active.view.getBounds() : null
+    return {
+      active: shortId(this.activeId),
+      top: shortId(topTabId(order)),
+      mismatch: stackMismatch(order, this.activeId),
+      views: order.length,
+      behind: this.behindIds.length,
+      size: bounds ? `${bounds.width}x${bounds.height}` : '-'
+    }
+  }
+
+  /**
+   * 보이는 탭이 맨 위 탭이 아니면(다른 탭이 가림) 층을 다시 쌓는다. 실기에서 DOM 은 정상인데 흰 화면만
+   * 보이던 상태를 잡으려는 점검이다. 복구가 계속 안 먹을 때 무한히 다시 쌓지 않게 횟수를 제한한다
+   */
+  private checkStack(): void {
+    if (this.disposed || this.win.isDestroyed() || this.win.isMinimized() || !this.win.isVisible()) return
+    if (this.frontDepth > 0 || this.gateHidden) return
+    const tab = this.active()
+    if (!tab || !isTabAlive(tab)) return
+    if (!stackMismatch(this.stackIds(), this.activeId)) return
+    if (!this.healGate.allow(Date.now())) {
+      paintDiag('stack-mismatch-skip', this.stackInfo())
+      return
+    }
+    paintDiag('stack-mismatch', this.stackInfo())
+    this.activate(tab.id, { repaint: true })
+    this.repaintView(tab)
+    paintDiag('stack-healed', this.stackInfo())
+  }
+
+  /**
+   * 보이는 탭을 다시 그리게 한다(Ctrl+Alt+R · 화면 캡처가 멈췄을 때). 모든 탭 뷰를 떼었다 순서대로 다시
+   * 붙이고(activate 와 같은 순서), 크기를 흔들어 페이지 전체를 다시 칠하라고 요청한다(repaintView).
+   * 자동화 대상 표식·방문 기록은 건드리지 않는다. 다시 그릴 탭이 없으면 false
+   */
+  repaintActive(reason: string): boolean {
+    const tab = this.active()
+    if (this.disposed || this.win.isDestroyed() || !tab || !isTabAlive(tab)) return false
+    paintDiag('repaint', { reason, ...this.stackInfo() })
+    this.activate(tab.id, { repaint: true })
+    this.repaintView(tab)
+    paintDiag('repaint-done', { reason, ...this.stackInfo() })
+    return true
+  }
+
+  /**
+   * 특정 탭을 다시 그리게 한다. 보이는 탭이면 repaintActive 와 같고, 뒤 층 탭(자동화 대상·레인)이면 층은 두고
+   * 크기 흔들기만 한다. 탭이 아닌 대상(팝업)이거나 이미 죽었으면 false — 호출부가 거짓으로 '복구했다'고 안내하지 않게 한다
+   */
+  repaintTab(id: string, reason: string): boolean {
+    if (id === this.activeId) return this.repaintActive(reason)
+    const tab = this.get(id)
+    if (this.disposed || this.win.isDestroyed() || !tab || !isTabAlive(tab)) return false
+    // 크기가 0 인 뒤 탭(로그인 게이트 중 등)은 repaintView 가 아무 일도 안 한다 — 다시 그렸다고 하지 않는다
+    const b = tab.view.getBounds()
+    if (b.width < 2 || b.height < 2) return false
+    paintDiag('repaint-behind', { reason, tab: shortId(id), ...this.stackInfo() })
+    this.repaintView(tab)
+    return true
   }
 
   /** 사람이 이 창을 쓰는 중이라 자동화가 보이는 탭·창 포커스를 바꾸면 안 되는가(visible-guard.ts) */
@@ -936,9 +1216,205 @@ export class TabManager {
     this.setBehindBounds(tab)
     if (this.behindIds.includes(tab.id)) return
     this.behindIds.push(tab.id)
-    this.win.contentView.addChildView(tab.view, 0)
-    // 보이는 탭에 가려진 뷰도 타이머·requestAnimationFrame 이 늦춰지지 않게 한다(가려짐 판정 스로틀링 방지)
+    // 보이는 탭에 가려진 뷰도 타이머·requestAnimationFrame 이 늦춰지지 않게 한다(가려짐 판정 스로틀링 방지).
+    // 순서가 중요하다 — 반드시 붙이기 **전에** 끈다. 스로틀링이 켜진 채 붙인 뒤 끄면 그 뷰는 다시 그려지지 않고
+    // capturePage 도 돌아오지 않는다(격리 실험 2026-10-24: 붙이고 끄기 6/6 멈춤·크기 흔들기·invalidate 로도 안 풀림,
+    // 끄고 붙이기 6/6 정상 0.1초). 뗀 상태에서 스로틀링을 바꾸고 붙이면 멈춘 뷰도 바로 살아난다
     tab.view.webContents.setBackgroundThrottling(false)
+    this.win.contentView.addChildView(tab.view, 0)
+  }
+
+  /**
+   * 레인이 이 탭(또는 이 탭이 띄운 팝업)을 쓴다고 알린다. 쉬느라 뒤 층에서 떼어 둔 탭이면 다시 붙인다.
+   * 레인 보기(lane-tabs)의 agentTarget·withFront 가 부른다. 레인 탭이 아니면 아무 일도 하지 않는다
+   */
+  touchLane(id: string): void {
+    if (this.disposed) return
+    const popup = this.popupById(id)
+    const tabId = popup ? popup.openerId : id
+    if (!this.laneIds.has(tabId)) return
+    this.laneTouchedAt.set(tabId, Date.now())
+    const tab = this.get(tabId)
+    if (tab && tabId !== this.activeId && !this.behindIds.includes(tabId)) {
+      this.sizeHidden(tab)
+      paintDiag('lane-wake', { tab: shortId(tabId), ...this.stackInfo() })
+    }
+    // 페이지를 비워 둔 탭이면 원래 주소를 다시 연다(레인 호출 앞에서 runner 가 whenRestored 로 기다린다)
+    if (tab) void this.restoreTab(tab)
+  }
+
+  /**
+   * 비워 둔 탭의 원래 주소를 다시 연다. 이미 여는 중이면 그 약속을 돌려준다. 비워 둔 탭이 아니면 곧바로 끝난다.
+   * 같은 WebContents 에서 여므로 쿠키·localStorage·sessionStorage 는 그대로다. 뒤로 가기 목록의 빈 페이지 항목은 지운다
+   */
+  restoreTab(tab: Tab): Promise<void> {
+    if (tab.restoring) return tab.restoring
+    const saved = tab.discarded
+    if (!saved || !isTabAlive(tab)) return Promise.resolve()
+    tab.discarded = undefined
+    const wc = tab.view.webContents
+    paintDiag('lane-restore', { tab: shortId(tab.id) })
+    const run = (async (): Promise<void> => {
+      // 비우는 이동이 아직 끝나지 않았으면 먼저 멈춘다 — 그대로 두면 빈 페이지의 로드 완료가 아래 loadURL 의 완료로 잡혀
+      // 원래 주소로 넘어가기 전에 끝난 것처럼 보였다(통합 시험: 부하가 높을 때 새 렌더러가 수십 초 늦게 떠서 겹침)
+      if (wc.isLoading()) wc.stop()
+      try {
+        await wc.loadURL(saved.url)
+      } catch {
+        // 리다이렉트로 끊긴 로드(ERR_ABORTED) 등 — 페이지는 이미 그 주소로 가고 있다
+      }
+      if (wc.isDestroyed()) return
+      // 원래 주소로 넘어가지도 못했으면(네트워크 끊김 등으로 빈 페이지에 머묾) 원래 주소를 되돌려 둔다 — 다음에 쓸 때 다시 연다
+      if (wc.getURL() === DISCARDED_PAGE_URL) {
+        tab.discarded = saved
+        paintDiag('lane-restore-failed', { tab: shortId(tab.id) })
+        return
+      }
+      // 원래 주소로 돌아오며 렌더러 프로세스가 바뀐다. 뒤 층에 붙은 채 바뀐 새 렌더러는 '가려짐'으로 시작해 그리지 않을 수
+      // 있어(통합 시험) 검증된 순서(떼기 → 스로틀링 끄기 → 붙이기)로 한 번 더 깨운다. 보이는 탭은 그대로 둔다
+      if (this.behindIds.includes(tab.id) && tab.id !== this.activeId && !this.win.isDestroyed()) {
+        this.win.contentView.removeChildView(tab.view)
+        wc.setBackgroundThrottling(false)
+        this.win.contentView.addChildView(tab.view, 0)
+      }
+      // 새 렌더러가 첫 화면을 그릴 때까지 기다린다 — 곧바로 찍으면 빈 이미지가 나왔다(통합 시험: 0초 빈 이미지, 0.3초 뒤 정상).
+      // 뒤 층에서 뗀 채라 그리지 않는 탭이면 제한 시간에서 끝난다
+      await Promise.race([
+        wc.executeJavaScript(FIRST_PAINT_JS).catch(() => undefined),
+        new Promise((r) => setTimeout(r, FIRST_PAINT_WAIT_MS))
+      ])
+      if (wc.isDestroyed()) return
+      // [.., 원래 페이지, 빈 페이지, 원래 페이지] 에서 빈 페이지 항목을 지워 뒤로 가기가 빈 페이지로 가지 않게 한다
+      try {
+        const h = wc.navigationHistory
+        const entries = h.getAllEntries()
+        for (let i = entries.length - 1; i >= 0; i--) {
+          if (entries[i].url === DISCARDED_PAGE_URL && i !== h.getActiveIndex()) h.removeEntryAtIndex(i)
+        }
+      } catch {
+        // 지우지 못해도 페이지 복구에는 지장이 없다
+      }
+    })()
+    tab.restoring = run.finally(() => {
+      tab.restoring = undefined
+      this.emit()
+    })
+    this.emit()
+    return tab.restoring
+  }
+
+  /**
+   * 비워 둔 탭을 다시 열고 있으면 끝날 때까지(최대 45초) 기다린다. 도구 호출 직전에 runner 가 부른다.
+   * 원래 페이지가 준비됐으면(또는 비운 탭이 아니면) true, 아직 여는 중이거나 다시 열지 못했으면 false —
+   * runner 는 false 면 도구를 실행하지 않는다(빈 페이지·덜 뜬 문서를 조작하지 않게)
+   */
+  async whenRestored(id: string): Promise<boolean> {
+    const tab = this.get(id)
+    if (!tab) return true
+    const p = tab.discarded ? this.restoreTab(tab) : tab.restoring
+    if (!p) return true
+    await Promise.race([p, new Promise<void>((r) => setTimeout(r, RESTORE_WAIT_MS))])
+    return !tab.discarded && !tab.restoring
+  }
+
+  /**
+   * 오래 쉰 레인 탭 하나의 페이지를 비워 메모리를 돌려준다(점검마다 한 개씩 — 한꺼번에 몰리지 않게).
+   * 비우는 조건: 뒤 층에서 이미 뗀 레인 탭, 마지막으로 쓴 지 DISCARD_IDLE_MS 지남, 보이는 탭·자동화 대상·진행 중 호출 아님,
+   * 불러오는 중 아님, 그 탭이 띄운 팝업 없음, 주문·결제·로그인 화면 아님(discardableUrl),
+   * 페이지를 누른 적 없고 입력하다 만 칸 없음(discardableProbe — 이동 때 '떠나시겠습니까' 창이 뜨지 않게)
+   */
+  private discardIdleLane(): void {
+    if (this.disposed || this.win.isDestroyed() || this.frontDepth > 0 || this.discarding) return
+    const now = Date.now()
+    const hot = this.hotLanes()
+    const candidate = this.tabs.find((t) => this.canDiscard(t, hot, now))
+    if (!candidate) return
+    const wc = candidate.view.webContents
+    const url = wc.getURL()
+    this.discarding = true
+    void Promise.race([
+      wc.executeJavaScript(PAGE_KEEP_PROBE_JS).catch(() => null),
+      new Promise((r) => setTimeout(() => r(null), DISCARD_PROBE_MS))
+    ])
+      .then((probe) => {
+        // 확인하는 사이 사람이 열었거나 도구가 썼거나 주소가 바뀌었으면 비우지 않는다
+        if (!this.canDiscard(candidate, this.hotLanes(), Date.now()) || wc.getURL() !== url) return
+        if (!discardableProbe(probe)) {
+          candidate.keepUrl = url
+          paintDiag('lane-discard-skip', { tab: shortId(candidate.id), probe })
+          return
+        }
+        candidate.discarded = { url, title: wc.getTitle() }
+        paintDiag('lane-discard', { tab: shortId(candidate.id) })
+        wc.loadURL(DISCARDED_PAGE_URL).catch(() => {
+          // 비우지 못했으면(페이지가 이동을 막음 등) 원래 상태로 둔다
+          if (!isTabAlive(candidate) || wc.getURL() !== DISCARDED_PAGE_URL) {
+            candidate.discarded = undefined
+            candidate.keepUrl = url
+          }
+        })
+        this.emit()
+      })
+      .finally(() => {
+        this.discarding = false
+      })
+  }
+
+  private canDiscard(t: Tab, hot: ReadonlySet<string>, now: number): boolean {
+    if (!isTabAlive(t) || t.discarded || t.restoring) return false
+    if (!this.laneIds.has(t.id) || hot.has(t.id)) return false
+    if (t.id === this.activeId || t.id === this.automationTabId || this.behindIds.includes(t.id)) return false
+    const at = this.laneTouchedAt.get(t.id)
+    if (at === undefined || now - at < DISCARD_IDLE_MS) return false
+    const wc = t.view.webContents
+    if (wc.isLoading() || wc.isCurrentlyAudible()) return false
+    const url = wc.getURL()
+    if (url === t.keepUrl || !discardableUrl(url)) return false
+    // 이 탭이 띄운 팝업(결제창·인증창)이 살아 있으면 부모 페이지가 결과를 받아야 한다
+    if (this.popups.alive().some((p) => p.openerId === t.id)) return false
+    return true
+  }
+
+  /**
+   * 레인 도구 호출이 도는 동안 그 레인 탭들을 쉬게 하지 않는다(문자 인증 대기·run_script 처럼 1분 넘는 호출).
+   * 돌려준 함수를 호출이 끝날 때 부른다 — 쉬는 시간은 끝난 때부터 다시 센다.
+   * ids 는 복사하지 않고 그대로 붙잡는다 — 레인의 탭 집합(LaneState.owned)을 넘기면 호출 도중 새로 연 탭도 붙잡힌다
+   */
+  holdLanes(ids: ReadonlySet<string>): () => void {
+    const key = Symbol('lane-hold')
+    this.laneHolds.set(key, ids)
+    const now = Date.now()
+    for (const id of ids) if (this.laneIds.has(id)) this.laneTouchedAt.set(id, now)
+    return () => {
+      if (!this.laneHolds.delete(key)) return
+      const end = Date.now()
+      for (const id of ids) if (this.laneIds.has(id)) this.laneTouchedAt.set(id, end)
+    }
+  }
+
+  /** 한동안 안 쓴 레인 탭을 뒤 층에서 뗀다(그리기를 멈춰 CPU 를 아낀다). 다시 쓰면 touchLane 이 붙인다 */
+  private sleepIdleLanes(): void {
+    if (this.disposed || this.win.isDestroyed() || this.frontDepth > 0) return
+    const hot = this.hotLanes()
+    const idle = this.behindIds.filter(
+      (id) => this.laneIds.has(id) && !hot.has(id) && id !== this.automationTabId
+    )
+    if (idle.length === 0) return
+    this.pruneBehind()
+    paintDiag('lane-sleep', { count: idle.length, ...this.stackInfo() })
+  }
+
+  private hotLanes(): Set<string> {
+    const busy = new Map<string, number>()
+    for (const ids of this.laneHolds.values()) {
+      for (const id of ids) busy.set(id, (busy.get(id) ?? 0) + 1)
+    }
+    return hotLaneIds({
+      laneIds: this.laneIds,
+      touchedAt: this.laneTouchedAt,
+      busy,
+      now: Date.now()
+    })
   }
 
   /** 뒤 탭 크기 — 보이는 탭과 같다. 로그인 게이트 중이면 0(게이트 화면 위로 비치지 않게) */
@@ -959,7 +1435,8 @@ export class TabManager {
       behind: this.behindIds,
       activeId: this.activeId,
       automationId: this.automationTabId,
-      laneIds: this.laneIds,
+      // 쉬는 레인 탭은 붙여 둘 대상에서 뺀다(sleepIdleLanes)
+      laneIds: this.hotLanes(),
       alive
     })
     this.behindIds = keep
@@ -991,14 +1468,26 @@ export class TabManager {
     return id
   }
 
-  activate(id: string): void {
+  /**
+   * opts.repaint — 이미 보이는 탭의 층을 다시 쌓기만 한다(repaintActive·층 점검). 사람이 쓰는 중이어도 막지 않고,
+   * 자동화 대상 표식과 방문 기록은 그대로 둔다
+   */
+  activate(id: string, opts?: { repaint?: boolean }): void {
     const tab = this.get(id)
     if (!tab || this.win.isDestroyed()) return
+    const repaint = opts?.repaint === true
+    if (!repaint) {
+      // 보거나 자동화 대상으로 고른 레인 탭은 '쓴' 것으로 친다 — 떠난 탭도 방금까지 본 것이라 곧바로 비우지 않는다
+      const now = Date.now()
+      for (const t of [id, this.activeId]) if (t !== null && this.laneIds.has(t)) this.laneTouchedAt.set(t, now)
+      // 비워 둔 탭이면 원래 페이지를 다시 연다
+      void this.restoreTab(tab)
+    }
     // 자동화 흐름인데 사람이 이 창을 쓰는 중이면 보이는 탭은 두고 자동화 대상 표식만 옮긴다
     // (실기 2026-09-27: 브리지의 new_tab·switch_tab 이 로그인하던 탭을 가려 로그인을 못 했다)
     // 보이는 탭이 닫혀 없으면(close 가 다음 탭을 보일 때) 막지 않는다 — 빈 화면으로 둘 수는 없다
     const visibleAlive = this.activeId !== null && this.get(this.activeId) !== null
-    if (visibleAlive && this.holdVisible()) {
+    if (!repaint && visibleAlive && this.holdVisible()) {
       this.automationTabId = id === this.activeId ? null : id
       this.sizeHidden(tab)
       this.pruneBehind()
@@ -1006,7 +1495,9 @@ export class TabManager {
     }
     // 보이는 탭이 곧 자동화 대상이 된다 — 자동화가 바꿨거나, 사람이 자동화 대상 탭을 직접 눌렀을 때.
     // 사람이 다른 탭을 누른 것은 표식을 지우지 않는다(뒤에서 돌던 자동화가 사람의 탭으로 옮겨 오지 않게)
-    if ((isAutomation() && visibleAlive) || this.automationTabId === id) this.automationTabId = null
+    if (!repaint && ((isAutomation() && visibleAlive) || this.automationTabId === id)) {
+      this.automationTabId = null
+    }
     // 탭 뷰를 다시 얹기 전에 알린다 — 위에 떠 있던 확장 팝업이 탭 뷰 아래로 묻히지 않게
     for (const cb of this.activatedListeners) cb()
     // 모든 탭 뷰를 창에서 제거(없으면 무시됨)한 뒤 뒤 탭은 맨 아래부터, 활성 탭은 맨 위에 다시 추가한다
@@ -1024,6 +1515,9 @@ export class TabManager {
       this.behindIds.push(prev.id)
       prev.view.webContents.setBackgroundThrottling(false)
     }
+    // 뒤 층(레인·자동화)에 있던 탭이 앞으로 나올 때는 그림을 다시 그리게 한다 — 크기가 뒤 층 때와 같아 setBounds 가
+    // 아무 일도 안 하고, 한 번도 앞에 나온 적 없는 뷰는 하얀 채로 남는 일이 있었다(실기 2026-10-24: 어떤 탭은 보이고 어떤 탭은 안 보임)
+    const wasBehind = this.behindIds.includes(id)
     this.activeId = id
     // 보이는 탭이 된 뒤 탭은 뒤 목록에서 빠지며 스로틀링이 원래대로(true) 돌아온다
     this.pruneBehind()
@@ -1034,9 +1528,33 @@ export class TabManager {
       if (t && isTabAlive(t)) this.win.contentView.addChildView(t.view, i)
     })
     this.win.contentView.addChildView(tab.view)
-    this.noteVisit(tab.view.webContents.getURL())
+    if (!repaint) this.noteVisit(tab.view.webContents.getURL())
     this.applyBounds()
+    if (wasBehind) this.repaintView(tab)
     this.emit()
+    paintDiag(repaint ? 'activate-repaint' : 'activate', {
+      id: shortId(id),
+      wasBehind,
+      ...this.stackInfo()
+    })
+  }
+
+  /** 크기를 1px 줄였다 되돌리고 invalidate 로 다시 그리게 한다(하얗게 남은 뒤 층 출신 뷰를 깨운다) */
+  private repaintView(tab: Tab): void {
+    if (!isTabAlive(tab)) return
+    const b = tab.view.getBounds()
+    if (b.width < 2 || b.height < 2) return
+    tab.view.setBounds({ ...b, width: b.width - 1 })
+    tab.view.setBounds(b)
+    tab.view.webContents.invalidate()
+    // 같은 틱의 두 setBounds 는 합쳐질 수 있어 한 번 더 늦게 확인한다
+    setTimeout(() => {
+      if (this.disposed || this.win.isDestroyed() || !isTabAlive(tab) || this.activeId !== tab.id) return
+      const cur = tab.view.getBounds()
+      tab.view.setBounds({ ...cur, width: cur.width - 1 })
+      tab.view.setBounds(cur)
+      tab.view.webContents.invalidate()
+    }, 80)
   }
 
   /** 팝업 창을 부모(메인) 창 가운데로 옮긴다. 화면 밖으로 나가지 않게 최소 0 으로 붙잡는다 */
@@ -1095,7 +1613,7 @@ export class TabManager {
           // 여는 창과 같은 세션(partition)을 명시한다 — 덮어쓴 webPreferences 는 세션을 물려받지 않는다
           webPreferences: {
             nodeIntegrationInSubFrames: true,
-            partition: `${this.partitionPrefix}${profile}`
+            partition: this.get(openerId)?.partition ?? `${this.partitionPrefix}${profile}`
           }
         }
       }
@@ -1130,10 +1648,12 @@ export class TabManager {
     if (this.automationTabId === id) this.automationTabId = null
     this.behindIds = this.behindIds.filter((b) => b !== id)
     this.laneIds.delete(id)
+    this.laneTouchedAt.delete(id)
     // 닫히기 전에 주소를 챙겨 둔다(제스처 '닫은 탭 다시 열기')
     if (isTabAlive(tab)) {
       const record: ClosedTabRecord = {
-        url: tab.view.webContents.getURL(),
+        // 비워 둔 탭이면 빈 페이지가 아니라 원래 주소를 남긴다
+        url: tab.discarded?.url ?? tab.view.webContents.getURL(),
         profile: tab.profile,
         mobile: tab.mobile
       }

@@ -10,6 +10,8 @@ const CALL_TIMEOUT_MS = 120_000
 
 export class BridgeDown extends Error {}
 export class BridgeBusy extends Error {}
+// 앱은 떠 있는데 응답이 제한 시간 안에 안 왔다(PC 부하) — 앱이 꺼진 것(BridgeDown)과 구분해 그 호출만 포기하고 다음으로 간다
+export class BridgeTimeout extends BridgeDown {}
 
 function target() {
   let c
@@ -22,7 +24,7 @@ function target() {
   return { base: `http://127.0.0.1:${c.bridgePort ?? 47811}`, token: c.bridgeToken }
 }
 
-async function request(path, { method = 'GET', body, lane } = {}) {
+async function request(path, { method = 'GET', body, lane, timeoutMs } = {}) {
   const { base, token } = target()
   let res
   try {
@@ -34,9 +36,10 @@ async function request(path, { method = 'GET', body, lane } = {}) {
         ...(lane ? { 'x-samba-lane': lane } : {})
       },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(CALL_TIMEOUT_MS)
+      signal: AbortSignal.timeout(timeoutMs ?? CALL_TIMEOUT_MS)
     })
   } catch (e) {
+    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') throw new BridgeTimeout(`브릿지 응답 지연(${Math.round((timeoutMs ?? CALL_TIMEOUT_MS) / 1000)}초)`)
     throw new BridgeDown(`브릿지에 연결하지 못했습니다(${e?.cause?.code ?? e?.message ?? e})`)
   }
   const text = await res.text()
@@ -55,15 +58,16 @@ export async function health() {
 }
 
 /** 도구 1회 호출. 409(바쁨)는 잠깐 쉬었다가 몇 번 다시 시도한다. 결과 문자열을 돌려준다 */
-export async function call(tool, args = {}, { lane, retries = 6 } = {}) {
+export async function call(tool, args = {}, { lane, retries = 6, timeoutMs } = {}) {
   for (let i = 0; ; i++) {
-    const r = await request(`/tool/${tool}`, { method: 'POST', body: { args }, lane })
+    const r = await request(`/tool/${tool}`, { method: 'POST', body: { args }, lane, timeoutMs })
     if (r.status === 200 && r.json.ok) return String(r.json.result ?? '')
     if (r.status === 409 && i < retries) {
       await sleep(2000 + i * 1500)
       continue
     }
     if (r.status === 409) throw new BridgeBusy('앱이 다른 작업 중입니다(409)')
+    if (r.status === 504) throw new BridgeTimeout('브릿지 도구 제한 시간 초과(504)')
     throw new Error(`도구 ${tool} 실패: ${r.status} ${r.json.error ?? ''}`.trim())
   }
 }

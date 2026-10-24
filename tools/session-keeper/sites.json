@@ -3,11 +3,20 @@
   "defaults": {
     "profile": "default",
     "budget": {
-      "perDay": 6,
-      "minGapMin": 30,
-      "maxConsecutiveFails": 3
+      "perDay": 100000,
+      "minGapMin": 0,
+      "maxConsecutiveFails": 100000
     },
     "checkTimeoutSec": 25
+  },
+  "_작업공간": "자동화 레인 탭(세션 관리자)이 쓸 작업공간 번호 — 로그인이 들어 있는 곳(사이드바 칩의 파란 점 = 2). 사용자가 작업공간을 바꿔도 레인 탭은 이 번호를 쓴다",
+  "workspaceId": 2,
+  "sambaSync": {
+    "_설명": "삼바 설정탭(소싱처 계정)의 아이디·비밀번호 계정을 키마스터로 맞춘다. ALL = 모든 활성 계정. autoEveryHours 마다 watch 가 한 번 한다(0 이면 끔)",
+    "sites": [
+      "ALL"
+    ],
+    "autoEveryHours": 24
   },
   "sites": [
     {
@@ -25,25 +34,30 @@
         ]
       },
       "_relogin_보류": "2026-10-04 키마스터 계정 자동 로그인 1회 시험 실패(제출 후 로그인 화면에 머묾, 원인 미확인). 앱에는 '네이버는 값을 직접 넣는다(2026-09-25 계정 잠김)' 테스트가 있어 입력 방식을 바꾸지 않았다. 화면을 보며 1회 확인한 뒤 켠다. 켤 때: relogin={type:vault_login, loginUrl:https://nid.naver.com/nidlogin.login}, budget perDay 2·minGapMin 60·maxConsecutiveFails 2",
-      "relogin": null
+      "relogin": null,
+      "openTab": false,
+      "checkTimeoutSec": 75
     },
     {
       "id": "ABCmart",
       "label": "ABC마트·그랜드스테이지",
-      "home": "https://www.a-rt.com/",
-      "markers": {
-        "in": [
-          "LOGOUT"
-        ],
-        "out": [
-          "LOGIN"
-        ]
-      },
-      "needsNaver": true,
       "relogin": {
-        "type": "naver_direct",
-        "url": "https://abcmart.a-rt.com/login/sns-login-popup?snsCode=10000"
-      }
+        "type": "vault_login",
+        "loginUrl": "https://abcmart.a-rt.com/login?track=W0005"
+      },
+      "checkTimeoutSec": 60,
+      "probe": {
+        "url": "https://abcmart.a-rt.com/mypage/claim/claim-order-main",
+        "loginRe": "a-rt\\.com/(login|member/login)",
+        "settleMs": 9000
+      },
+      "accounts": [
+        {
+          "profile": "abcmart",
+          "accountLabel": "rnwhgowh"
+        }
+      ],
+      "_프록시메모": "2026-10-17 사무실 IP 가 a-rt.com 웹방화벽에 막혀(10-06~) 전용 프로필 abcmart 를 한국 고정 IP 프록시로 내보낸다(%APPDATA%\\SAMBA Browser\\profile-proxies.json). 네이버 세션이 없는 프로필이라 아이디·비밀번호로 로그인"
     },
     {
       "id": "SSG",
@@ -57,12 +71,12 @@
           "로그인"
         ]
       },
-      "needsNaver": true,
       "relogin": {
-        "type": "naver_click",
-        "loginUrl": "https://member.ssg.com/member/login.ssg",
-        "text": "네이버 로그인"
-      }
+        "type": "vault_login",
+        "loginUrl": "https://member.ssg.com/member/login.ssg"
+      },
+      "_복구메모": "2026-10-24 사장님 지시: 네이버 로그인 말고 사이트 계정(아이디·비밀번호)으로 직접 로그인 → vault_login",
+      "checkTimeoutSec": 75
     },
     {
       "id": "LOTTEON",
@@ -77,12 +91,11 @@
           "로그인/회원가입"
         ]
       },
-      "needsNaver": true,
       "relogin": {
-        "type": "naver_click",
-        "loginUrl": "https://www.lotteon.com/p/member/login/common",
-        "text": "네이버"
-      }
+        "type": "vault_login",
+        "loginUrl": "https://www.lotteon.com/p/member/login/common"
+      },
+      "_복구메모": "2026-10-24 사장님 지시: 네이버 로그인 말고 사이트 계정(아이디·비밀번호)으로 직접 로그인 → vault_login"
     },
     {
       "id": "MUSINSA",
@@ -98,7 +111,8 @@
       },
       "relogin": {
         "type": "vault_login",
-        "loginUrl": "https://www.musinsa.com/auth/login"
+        "loginUrl": "https://www.musinsa.com/auth/login",
+        "submitClick": "로그인"
       },
       "accounts": [
         {
@@ -153,12 +167,293 @@
       "identity": {
         "url": "https://my.musinsa.com/api2/member/v1/my-info",
         "pattern": "\"memberId\"\\s*:\\s*\"([^\"]+)\""
-      },
-      "budget": {
-        "perDay": 4,
-        "minGapMin": 120,
-        "maxConsecutiveFails": 2
       }
+    },
+    {
+      "id": "GSShop",
+      "label": "GS샵",
+      "checkTimeoutSec": 45,
+      "probe": {
+        "url": "https://www.gsshop.com/ord/dlvcursta/ordList.gs",
+        "loginRe": "gsshop\\.com/cust/login/"
+      },
+      "relogin": {
+        "type": "vault_login",
+        "loginUrl": "https://www.gsshop.com/cust/login/login.gs"
+      },
+      "_복구메모": "설정탭 로그인 방식=네이버. 아이디·비밀번호 입력은 2026-10-17 실패 → 네이버 버튼 2026-10-24 사장님 지시: 네이버 로그인 말고 사이트 계정(아이디·비밀번호)으로 직접 로그인 → vault_login"
+    },
+    {
+      "id": "LOTTEIMALL",
+      "label": "롯데아이몰",
+      "checkTimeoutSec": 45,
+      "probe": {
+        "url": "https://www.lotteimall.com/mypage/searchOrderList.lotte",
+        "loginRe": "lotteimall\\.com/member/login/"
+      },
+      "relogin": {
+        "type": "vault_login",
+        "loginUrl": "https://www.lotteimall.com/member/login/forward.LCLoginMem.lotte"
+      },
+      "_판정메모": "비로그인이면 200 + 자동 제출 재로그인 폼(frmRelogin)이 로그인 화면으로 보낸다(확장앱 2026-10-06 실측) — 탭에서는 주소로 갈린다"
+    },
+    {
+      "id": "SSF",
+      "label": "SSF샵",
+      "checkTimeoutSec": 45,
+      "probe": {
+        "url": "https://www.ssfshop.com/secured/mypage/myGoodsReviewList",
+        "loginRe": "ssfshop\\.com/public/member/login"
+      },
+      "relogin": {
+        "type": "vault_login",
+        "loginUrl": "https://www.ssfshop.com/public/member/login"
+      }
+    },
+    {
+      "id": "TheHyundai",
+      "label": "더현대",
+      "checkTimeoutSec": 45,
+      "probe": {
+        "url": "https://hi.thehyundai.com/mypage",
+        "loginRe": "hi\\.thehyundai\\.com/login"
+      },
+      "relogin": {
+        "type": "vault_login",
+        "loginUrl": "https://hi.thehyundai.com/login"
+      }
+    },
+    {
+      "id": "FashionPlus",
+      "label": "패션플러스",
+      "checkTimeoutSec": 45,
+      "probe": {
+        "url": "https://www.fashionplus.co.kr/mypage/order",
+        "loginRe": "fashionplus\\.co\\.kr/auth/login"
+      },
+      "relogin": {
+        "type": "vault_login",
+        "loginUrl": "https://www.fashionplus.co.kr/auth/login?redirect_to_after_login=%2F"
+      }
+    },
+    {
+      "id": "GALLERIAMALL",
+      "label": "갤러리아몰",
+      "checkTimeoutSec": 45,
+      "probe": {
+        "url": "https://www.galleria.co.kr/mypage/myMemProfile.action",
+        "loginRe": "galleria\\.co\\.kr/(login/login\\.action|commonmb/searchPwAuth)"
+      },
+      "relogin": {
+        "type": "vault_login",
+        "loginUrl": "https://www.galleria.co.kr/login/login.action"
+      }
+    },
+    {
+      "id": "HMALL",
+      "label": "H몰",
+      "checkTimeoutSec": 45,
+      "probe": {
+        "url": "https://www.hmall.com/mo/mpf/selectMyPageMain",
+        "loginRe": "hmall\\.com/(mo|pd|md|p)/(cob|cua)/(loginForm|login)"
+      },
+      "relogin": {
+        "type": "vault_login",
+        "loginUrl": "https://www.hmall.com/mo/cob/loginForm"
+      },
+      "cookieHost": "hmall.com"
+    },
+    {
+      "id": "GMARKET",
+      "label": "G마켓",
+      "checkTimeoutSec": 45,
+      "probe": {
+        "url": "https://my.gmarket.co.kr/ko/pc/main",
+        "loginRe": "gmarket\\.co\\.kr/(Login/Login|LogIn/LogIn)"
+      },
+      "relogin": {
+        "type": "vault_login",
+        "loginUrl": "https://signin.gmarket.co.kr/LogIn/LogIn"
+      },
+      "_복구메모": "설정탭 계정 ditodalal = 네이버 간편로그인(기본 프로필 네이버와 같은 계정). 아이디·비밀번호 입력은 2026-10-17 실패 → 네이버 버튼 2026-10-24 사장님 지시: 네이버 로그인 말고 사이트 계정(아이디·비밀번호)으로 직접 로그인 → vault_login"
+    },
+    {
+      "id": "LFmall",
+      "label": "LF몰",
+      "checkTimeoutSec": 45,
+      "probe": {
+        "url": "https://www.lfmall.co.kr/app/mypage/product/review",
+        "loginRe": "lfmall\\.co\\.kr/app/login"
+      },
+      "relogin": {
+        "type": "vault_login",
+        "loginUrl": "https://www.lfmall.co.kr/app/login"
+      },
+      "accounts": [
+        {
+          "profile": "default",
+          "accountLabel": "ditodalal"
+        },
+        {
+          "profile": "lfmall-2",
+          "accountLabel": "youngae0047"
+        },
+        {
+          "profile": "lfmall-3",
+          "accountLabel": "kapital473"
+        },
+        {
+          "profile": "lfmall-4",
+          "accountLabel": "cdhking4"
+        }
+      ]
+    },
+    {
+      "id": "NAVERSTORE",
+      "label": "스마트스토어(네이버)",
+      "checkTimeoutSec": 45,
+      "role_note": "네이버 아이디 6개 — 계정마다 프로필",
+      "probe": {
+        "url": "https://shopping.naver.com/my/writable-reviews",
+        "loginRe": "nid\\.naver\\.com/"
+      },
+      "_relogin_보류": "2026-10-17 시험 2회: ① 앱이 '패스키 로그인'을 눌러 다른 계정으로 로그인(앱 수정함) ② 수정 후 실제 로그인 제출 → 네이버가 로그인 화면에 머묾(자동 입력 차단). 네이버 계정은 사람이 로그인하고, 세션 관리자는 감시·계정 확인만 한다",
+      "relogin": null,
+      "accounts": [
+        {
+          "profile": "default",
+          "accountLabel": "ditodalal"
+        },
+        {
+          "profile": "naver-rnwhgowh",
+          "accountLabel": "rnwhgowh"
+        },
+        {
+          "profile": "naver-rnwhgowh1",
+          "accountLabel": "rnwhgowh1"
+        },
+        {
+          "profile": "naver-ahffkehehoa",
+          "accountLabel": "ahffkehehoa"
+        },
+        {
+          "profile": "naver-rossnehd",
+          "accountLabel": "rossnehd"
+        },
+        {
+          "profile": "naver-rossnehd3",
+          "accountLabel": "rossnehd3"
+        }
+      ],
+      "naverForm": true,
+      "identity": {
+        "url": "https://nid.naver.com/user2/help/myInfoV2?lang=ko_KR",
+        "pattern": "프로필 수정하기\\s+\\S+\\s+([A-Za-z0-9._-]+)@naver\\.com"
+      }
+    },
+    {
+      "id": "AUCTION",
+      "label": "옥션",
+      "checkTimeoutSec": 45,
+      "probe": {
+        "url": "https://mmya.auction.co.kr/",
+        "loginRe": "signin\\.auction\\.co\\.kr/"
+      },
+      "relogin": {
+        "type": "vault_login",
+        "loginUrl": "https://signin.auction.co.kr/Authenticate/login.aspx"
+      },
+      "_복구메모": "설정탭 계정 ditodalal = 네이버 간편로그인(기본 프로필 네이버와 같은 계정) 2026-10-24 사장님 지시: 네이버 로그인 말고 사이트 계정(아이디·비밀번호)으로 직접 로그인 → vault_login"
+    },
+    {
+      "id": "29CM",
+      "label": "29CM",
+      "checkTimeoutSec": 45,
+      "relogin": {
+        "type": "vault_login",
+        "loginUrl": "https://auth.29cm.co.kr/login?redirect_uri=https%3A%2F%2Fwww.29cm.co.kr%2F",
+        "preClick": "무신사 통합계정 가입 및 로그인",
+        "submitClick": "로그인"
+      },
+      "accounts": [
+        {
+          "profile": "29cm-cdhking00",
+          "accountLabel": "cdhking00"
+        },
+        {
+          "profile": "tmp-29cm-out",
+          "accountLabel": "cdhking00"
+        }
+      ],
+      "_복구메모": "2026-10-24 사장님 확인: 29CM 은 네이버가 아니라 무신사 통합계정(member.one.musinsa.com) — 계정이 무신사 cdhking00 과 같다. 로그인 버튼 → 무신사 통합계정 버튼 → 키마스터의 무신사 계정(accountLabel) 입력 → 로그인 버튼.",
+      "home": "https://www.29cm.co.kr/",
+      "markers": {
+        "in": [
+          "로그아웃"
+        ],
+        "out": [
+          "로그인/회원가입"
+        ]
+      },
+      "probe": {
+        "url": "https://www.29cm.co.kr/my-page/heart/product",
+        "loginRe": "auth\\.29cm\\.co\\.kr/login"
+      }
+    },
+    {
+      "id": "OKCASHBACK",
+      "label": "OK캐쉬백",
+      "checkTimeoutSec": 45,
+      "probe": {
+        "url": "https://www.okcashbag.com/my/point",
+        "loginRe": "okcashbag\\.com/login"
+      },
+      "_relogin_보류": "설정탭 로그인 방식 = 카카오(자동 로그인 전략 없음) — 사람이 로그인",
+      "relogin": null
+    },
+    {
+      "id": "LEE",
+      "label": "Lee(비케이브 통합)",
+      "checkTimeoutSec": 45,
+      "enabled": false,
+      "probe": {
+        "url": "https://www.leekorea.co.kr/account",
+        "loginRe": "leekorea\\.co\\.kr/login"
+      },
+      "relogin": {
+        "type": "vault_login",
+        "loginUrl": "https://www.leekorea.co.kr/login"
+      },
+      "_보류": "2026-10-15 사이트 개편 — 커버낫·Lee·와키윌리 통합 회원가입 1회 필요, 네이버 로그인 없어짐. 가입 후 설정탭에 아이디·비밀번호를 넣고 enabled 를 켠다"
+    },
+    {
+      "id": "WACKYWILLY",
+      "label": "와키윌리(비케이브 통합)",
+      "checkTimeoutSec": 45,
+      "enabled": false,
+      "probe": {
+        "url": "https://www.wackywilly.co.kr/account",
+        "loginRe": "wackywilly\\.co\\.kr/login"
+      },
+      "relogin": {
+        "type": "vault_login",
+        "loginUrl": "https://www.wackywilly.co.kr/login"
+      },
+      "_보류": "LEE 와 같은 통합 계정 — 가입 후 켠다"
+    },
+    {
+      "id": "Nike",
+      "label": "나이키",
+      "checkTimeoutSec": 45,
+      "probe": {
+        "url": "https://www.nike.com/kr/member/profile",
+        "loginRe": "accounts\\.nike\\.com/"
+      },
+      "relogin": {
+        "type": "vault_login",
+        "loginUrl": "https://www.nike.com/kr/login"
+      },
+      "_메모": "2026-10-24 추가. 삼바 설정탭 계정 rnwhgowh2@gmail.com(id_pw). 로그인 화면은 accounts.nike.com 이메일→비밀번호 2단계. 키마스터에 계정이 들어가야(삼바계정_키마스터로_동기화.cmd) 복구가 된다"
     }
   ]
 }

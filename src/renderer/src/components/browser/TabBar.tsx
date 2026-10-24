@@ -24,7 +24,7 @@ export function TabBar(): React.JSX.Element {
             <div
               key={tab.id}
               onClick={() => activateTab(tab.id)}
-              title={color ? t('tab.profileOf', { profile: tab.profile }) : undefined}
+              title={color ? t('tab.profileOf', { profile: tab.profileLabel ?? tab.profile }) : undefined}
               style={
                 {
                   WebkitAppRegion: 'no-drag',
@@ -43,7 +43,7 @@ export function TabBar(): React.JSX.Element {
                   className="h-4 px-1.5 text-[10.5px]"
                   style={{ color, backgroundColor: profileTint(tab.profile) ?? undefined }}
                 >
-                  {tab.profile}
+                  {tab.profileLabel ?? tab.profile}
                 </Badge>
               )}
               <X

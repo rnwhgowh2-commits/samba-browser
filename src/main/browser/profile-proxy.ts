@@ -48,7 +48,10 @@ export function parseProxyUrl(raw: string): ProfileProxy | null {
 
 /** 파티션 이름('persist:ws1-snkrdunk')에서 프로필 이름을 뗀다 */
 export function profileOfPartition(partition: string, prefix: string): string {
-  return partition.startsWith(prefix) ? partition.slice(prefix.length) : partition
+  if (partition.startsWith(prefix)) return partition.slice(prefix.length)
+  // 현재 작업공간이 아닌 곳의 파티션(자동화 레인 탭은 고정된 작업공간을 쓴다)도 프로필 이름은 같다
+  const m = /^persist:ws\d+-(.+)$/.exec(partition)
+  return m ? m[1] : partition
 }
 
 /** 파일 + 환경변수를 합친다. 환경변수가 파일보다 우선한다. 프로필 이름은 소문자로 맞춘다 */
@@ -85,11 +88,15 @@ export function loadProfileProxies(
   return out
 }
 
-/** 프록시 호스트(host:port) — 'login' 이벤트의 authInfo.host/port 와 대조한다 */
-function proxyHosts(rules: string): Set<string> {
+/**
+ * 프록시 호스트(host:port) — 'login' 이벤트의 authInfo.host/port 와 대조한다.
+ * 규칙 앞의 'http='·'https=' 와 스킴(socks5://)은 떼고 호스트만 남긴다.
+ * (실기 2026-10-17: 예전 정규식이 'http=' 까지 호스트로 읽어 인증 프록시가 한 번도 맞지 않았다 → 터널 실패 -111)
+ */
+export function proxyHosts(rules: string): Set<string> {
   const hosts = new Set<string>()
   for (const part of rules.split(/[;,]/)) {
-    const m = /(?:^|=)\s*(?:[a-z0-9]+:\/\/)?([^\s/]+?)(?::(\d+))?\s*$/i.exec(part.trim())
+    const m = /^(?:[a-z]+=)?(?:[a-z0-9]+:\/\/)?([^\s/=:]+)(?::(\d+))?\s*$/i.exec(part.trim())
     if (m) hosts.add(`${m[1].toLowerCase()}:${m[2] ?? ''}`)
   }
   return hosts

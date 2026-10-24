@@ -25,6 +25,9 @@ export function laneTabs(real: TabManager, state: LaneState): TabManager {
     state.owned.has(t.id) ||
     (t.kind === 'popup' && typeof t.openerId === 'string' && state.owned.has(t.openerId))
   const alive = (id: string): boolean => real.listTargets().some((t) => t.id === id && mine(t))
+  // 쉬느라 뒤 층에서 떼어 둔 레인 탭을 도구가 쓰기 직전에 다시 붙인다(tab-manager sleepIdleLanes).
+  // touchLane 이 없는 대역(테스트 스텁)은 건너뛴다
+  const touch = (id: string): void => (real as Partial<TabManager>).touchLane?.(id)
   const overrides: Partial<Record<keyof TabManager, unknown>> = {
     list: () => real.list().filter((t) => state.owned.has(t.id)),
     listTargets: (): AgentTarget[] =>
@@ -35,10 +38,14 @@ export function laneTabs(real: TabManager, state: LaneState): TabManager {
     active: (): Tab | null =>
       state.current && state.owned.has(state.current) ? real.get(state.current) : null,
     agentTarget: (): Tab | null => {
-      if (state.current && alive(state.current)) return real.targetTab(state.current)
+      if (state.current && alive(state.current)) {
+        touch(state.current)
+        return real.targetTab(state.current)
+      }
       // 작업 창이 닫혔으면(결제창 등) 레인의 마지막 탭으로 돌아간다
       const last = [...state.owned].reverse().find((id) => real.get(id) !== null) ?? null
       state.current = last
+      if (last) touch(last)
       return last ? real.get(last) : null
     },
     focusTarget: (id: string): void => {

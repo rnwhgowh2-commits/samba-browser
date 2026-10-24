@@ -250,6 +250,10 @@ export interface TabInfo {
   url: string
   title: string
   profile: string
+  /** 화면에 보일 계정 이름(프로필 이름 대신). 이름표가 없으면 생략 */
+  profileLabel?: string
+  /** 이 프로필이 속한 소싱처 id(주소가 아직 안 떴을 때 묶음 판단용). 없으면 생략 */
+  profileSite?: string
   mobile: boolean
   loading: boolean
   active: boolean

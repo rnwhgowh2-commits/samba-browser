@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { loadProfileProxies, parseProxyUrl, profileOfPartition } from '../src/main/browser/profile-proxy'
+import { loadProfileProxies, parseProxyUrl, profileOfPartition, proxyHosts } from '../src/main/browser/profile-proxy'
 
 describe('프로필별 프록시 설정', () => {
   it('http 주소는 http=·https= 규칙으로, 자격은 따로 뗀다', () => {
@@ -20,6 +20,9 @@ describe('프로필별 프록시 설정', () => {
   it('파티션 이름에서 접두어를 떼 프로필을 얻는다', () => {
     expect(profileOfPartition('persist:ws1-snkrdunk', 'persist:ws1-')).toBe('snkrdunk')
     expect(profileOfPartition('persist:other', 'persist:ws1-')).toBe('persist:other')
+    // 현재 작업공간이 아닌 곳의 파티션도 프로필 이름은 같다(고정 작업공간을 쓰는 자동화 레인 탭)
+    expect(profileOfPartition('persist:ws2-abcmart', 'persist:ws3-')).toBe('abcmart')
+    expect(profileOfPartition('persist:ws12-lfmall-2', 'persist:ws3-')).toBe('lfmall-2')
   })
 
   it('환경변수 SAMBA_PROFILE_PROXY_<프로필> 이 파일보다 우선하고 프로필 이름은 소문자로 맞춘다', () => {
@@ -28,5 +31,13 @@ describe('프로필별 프록시 설정', () => {
     })
     expect(out.snkrdunk?.proxyRules).toBe('http=127.0.0.1:8899;https=127.0.0.1:8899')
     expect(Object.keys(out)).toEqual(['snkrdunk'])
+  })
+
+  it('인증 대조용 프록시 호스트는 http=·https= 접두어와 스킴을 뗀다(2026-10-17 터널 실패 -111)', () => {
+    expect([...proxyHosts('http=proxy.example.net:3120;https=proxy.example.net:3120')]).toEqual([
+      'proxy.example.net:3120'
+    ])
+    expect([...proxyHosts('socks5://10.0.0.1:1080')]).toEqual(['10.0.0.1:1080'])
+    expect([...proxyHosts('proxy.example.net')]).toEqual(['proxy.example.net:'])
   })
 })

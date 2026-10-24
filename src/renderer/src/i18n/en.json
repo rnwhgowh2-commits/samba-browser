@@ -275,6 +275,7 @@
     "empty": "No open tabs",
     "untitled": "Untitled",
     "popup": "Popup",
+    "otherGroup": "Other",
     "profileOf": "Account profile: {{profile}} (this tab has its own login session)"
   },
   "newtab": {

@@ -10,6 +10,7 @@ import { timingSafeEqual } from 'node:crypto'
 import type { ToolSession } from '../agent/runner'
 import type { ParsedLogin } from '../import/passwords-csv'
 import type { ImportPasswordsResult } from '../../shared/import'
+import { clearSiteCookies } from '../browser/cookie-clear'
 
 export interface BridgeDeps {
   /** lane 이 있으면 그 레인 세션(다른 레인과 동시에 열린다) */
@@ -108,6 +109,7 @@ export class BridgeServer {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     if (req.method === 'GET' && url.pathname === '/health') return this.health(res)
     if (req.method === 'POST' && url.pathname === '/vault/import-logins') return this.importLogins(req, res)
+    if (req.method === 'POST' && url.pathname === '/cookies/clear') return this.clearCookies(req, res)
     const m = /^\/tool\/([a-z0-9_]{1,64})$/.exec(url.pathname)
     if (req.method === 'POST' && m) return this.tool(m[1], req, res)
     return json(res, 404, { error: 'not found' })
@@ -152,6 +154,32 @@ export class BridgeServer {
       const msg = e instanceof Error ? e.message : String(e)
       if (msg === 'locked') return json(res, 423, { ok: false, error: 'vault locked' })
       json(res, 500, { ok: false, error: 'import failed' })
+    }
+  }
+
+  /**
+   * 한 사이트의 쿠키만 지운다. 본문 { profile, host, automation? }. 로그인 사이트 허용 목록의 호스트만 받는다.
+   * 쿠키가 쌓여 서버가 400(Cookie Too Large)으로 사이트 전체를 막을 때 세션 관리자가 쓴다. 응답은 지운 개수뿐이다
+   */
+  private async clearCookies(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let body: string
+    try {
+      body = await readBody(req)
+    } catch (e: unknown) {
+      if (e instanceof BodyTooLarge) return json(res, 413, { error: 'body too large' })
+      return json(res, 400, { error: 'invalid body' })
+    }
+    let parsed: { profile?: unknown; host?: unknown; automation?: unknown }
+    try {
+      parsed = JSON.parse(body) as typeof parsed
+    } catch {
+      return json(res, 400, { error: 'invalid json' })
+    }
+    try {
+      const r = await clearSiteCookies(parsed)
+      json(res, r.ok ? 200 : 400, r)
+    } catch {
+      json(res, 500, { ok: false, error: 'clear failed' })
     }
   }
 

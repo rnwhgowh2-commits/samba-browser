@@ -275,6 +275,7 @@
     "empty": "열린 탭이 없습니다",
     "untitled": "제목 없음",
     "popup": "팝업",
+    "otherGroup": "기타(새 탭 등)",
     "profileOf": "계정 프로필: {{profile}} (이 탭의 로그인 세션은 이 계정 전용)"
   },
   "newtab": {

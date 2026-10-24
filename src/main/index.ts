@@ -6,6 +6,7 @@ import { TabManager } from './browser/tab-manager'
 import { setExtensionTabsProvider } from './extensions/tabs-bridge'
 import { installExtensionPageApi } from './extensions/page-api'
 import { markQuitting } from './browser/popups'
+import { flushCookieSnapshots } from './browser/session-cookie-snapshot'
 import { flushAllCookieStores } from './browser/session-cookies'
 import { registerInternalProtocol, registerInternalScheme } from './browser/internal-protocol'
 import { registerIpc } from './ipc/handlers'
@@ -16,6 +17,7 @@ import type { SyncEngineHolder } from './sync/engine'
 import { runLoginHarness, writeVaultLocked } from './e2e/login-harness'
 import { chromeUserAgent } from './browser/webstore-ua'
 import { humanBusyInWindow } from './browser/human-activity'
+import { flushPaintDiag, initPaintDiag, paintDiag } from './browser/paint-diag'
 
 // 브라우저 프로세스 크래시 덤프를 로컬에 남긴다(서버 업로드 없음). 원인 추적용
 crashReporter.start({ uploadToServer: false, compress: false })
@@ -106,6 +108,17 @@ app
   .whenReady()
   .then(async () => {
     electronApp.setAppUserModelId('com.samba.browser')
+    // 탭 화면이 흰 채로 남는 문제 진단 기록(userData/logs/paint-diag.log). GPU·렌더러 프로세스 이상도 같이 남긴다
+    initPaintDiag(join(app.getPath('userData'), 'logs', 'paint-diag.log'))
+    paintDiag('app-start', { pid: process.pid, electron: process.versions.electron })
+    app.on('child-process-gone', (_e, details) =>
+      paintDiag('child-process-gone', {
+        type: details.type,
+        reason: details.reason,
+        exitCode: details.exitCode,
+        name: details.name
+      })
+    )
     app.on('browser-window-created', (_, w) => optimizer.watchWindowShortcuts(w))
     // 자체 새 탭 페이지 서빙. 개발 모드에서는 vite 개발 서버로 넘긴다
     registerInternalProtocol({
@@ -176,6 +189,10 @@ app.on('window-all-closed', () => {
 // preventDefault 로 종료 자체를 취소해, DB·금고만 닫힌 좀비 앱이 남는다
 app.on('before-quit', () => {
   markQuitting()
+  // 아직 쓰지 않은 로그인 쿠키 보관본을 바로 쓴다(다음 시작 때 되살린다)
+  flushCookieSnapshots()
+  // 진단 기록에 모아 둔 줄도 남긴다(paint-diag.ts)
+  flushPaintDiag()
   // 쿠키 저장소도 디스크에 내려 둔다(정상 종료가 마저 쓰지만, 늦어지는 종료에도 안전하게)
   void flushAllCookieStores()
   shutdown()

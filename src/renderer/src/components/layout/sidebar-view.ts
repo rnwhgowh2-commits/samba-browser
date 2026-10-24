@@ -7,7 +7,7 @@ import {
   type SidebarSectionKey,
   type SidebarSections
 } from '@shared/settings'
-import { normalizeHost } from '@shared/host'
+import { normalizeHost, registrableDomain } from '@shared/host'
 import { isHttpUrl } from '@shared/url'
 
 export { SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_SECTION_KEYS }
@@ -76,4 +76,84 @@ export function tabFaviconHost(url: string): string {
 /** 열린 탭 줄에 보여 줄 제목. 제목이 비면 주소로, 그것도 비면 넘겨받은 기본 문구로 떨어진다 */
 export function tabRowLabel(tab: { title: string; url: string }, fallback: string): string {
   return tab.title.trim() || tab.url.trim() || fallback
+}
+
+/**
+ * 열린 탭을 묶을 때 쓰는 소싱처·판매처 이름표(호스트 끝부분 → 화면에 보일 이름).
+ * 여기 없는 사이트는 등록 도메인(예: example.com)으로 묶는다
+ */
+const SITE_GROUPS: readonly { host: string; name: string }[] = [
+  { host: 'musinsa.com', name: '무신사' },
+  { host: '29cm.co.kr', name: '29CM' },
+  { host: 'a-rt.com', name: 'ABC마트' },
+  { host: 'ssg.com', name: 'SSG' },
+  { host: 'lotteon.com', name: '롯데온' },
+  { host: 'lotteimall.com', name: '롯데아이몰' },
+  { host: 'gsshop.com', name: 'GS샵' },
+  { host: 'ssfshop.com', name: 'SSF샵' },
+  { host: 'thehyundai.com', name: '더현대' },
+  { host: 'hmall.com', name: 'H몰' },
+  { host: 'fashionplus.co.kr', name: '패션플러스' },
+  { host: 'galleria.co.kr', name: '갤러리아' },
+  { host: 'lfmall.co.kr', name: 'LF몰' },
+  { host: 'nike.com', name: '나이키' },
+  { host: 'gmarket.co.kr', name: 'G마켓' },
+  { host: 'auction.co.kr', name: '옥션' },
+  { host: 'coupang.com', name: '쿠팡' },
+  { host: '11st.co.kr', name: '11번가' },
+  { host: 'naver.com', name: '네이버' },
+  { host: 'okcashbag.com', name: 'OK캐쉬백' },
+  { host: 'samba-ybb.com', name: '삼바웨이브' },
+  { host: 'samba-wave.vercel.app', name: '삼바웨이브' },
+  { host: 'localhost', name: '삼바웨이브' }
+]
+
+/** 세션 관리자 소싱처 id → 묶음 이름(SITE_GROUPS 의 이름과 같아야 한다) */
+const SITE_ID_NAMES: Record<string, string> = {
+  MUSINSA: '무신사',
+  LFmall: 'LF몰',
+  NAVERSTORE: '네이버',
+  '29CM': '29CM',
+  ABCmart: 'ABC마트'
+}
+
+export interface TabGroup<T> {
+  /** 묶음 구분값(이름표의 이름 또는 등록 도메인, 웹이 아니면 빈 문자열) */
+  key: string
+  /** 화면에 보일 이름. 웹 주소가 아닌 탭(새 탭 등)은 넘겨받은 기본 문구 */
+  label: string
+  tabs: T[]
+}
+
+/** 탭 주소가 속한 소싱처 이름. 이름표에 없으면 등록 도메인, 웹 주소가 아니면 빈 문자열 */
+export function siteGroupOf(url: string): string {
+  if (!isHttpUrl(url)) return ''
+  const host = normalizeHost(url)
+  if (!host) return ''
+  const hit = SITE_GROUPS.find((g) => host === g.host || host.endsWith(`.${g.host}`))
+  return hit ? hit.name : registrableDomain(host)
+}
+
+/**
+ * 열린 탭을 소싱처별로 묶는다. 묶음 순서는 그 묶음의 첫 탭이 나온 순서, 묶음 안 순서는
+ * 원래 탭 순서를 그대로 지킨다(탭 바와 순서가 어긋나지 않게)
+ */
+export function groupTabsBySite<T extends { url: string; profileSite?: string }>(
+  tabs: readonly T[],
+  fallbackLabel: string
+): TabGroup<T>[] {
+  const groups: TabGroup<T>[] = []
+  const byKey = new Map<string, TabGroup<T>>()
+  for (const tab of tabs) {
+    // 주소가 아직 안 떴으면(로딩 중) 그 프로필의 소싱처로 묶는다
+    const key = siteGroupOf(tab.url) || (tab.profileSite ? (SITE_ID_NAMES[tab.profileSite] ?? '') : '')
+    let group = byKey.get(key)
+    if (!group) {
+      group = { key, label: key || fallbackLabel, tabs: [] }
+      byKey.set(key, group)
+      groups.push(group)
+    }
+    group.tabs.push(tab)
+  }
+  return groups
 }

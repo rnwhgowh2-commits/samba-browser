@@ -16,7 +16,11 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync, unl
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
-import { call, health, sleep, BridgeDown, BridgeBusy } from './bridge.mjs'
+import { call as bridgeCall, health, postJson, sleep, BridgeDown, BridgeBusy, BridgeTimeout } from './bridge.mjs'
+
+// 모든 브릿지 호출에 기본 제한 시간을 둔다(부하로 앱이 늦어도 한 호출이 오래 붙잡지 못하게). 호출마다 timeoutMs 로 바꿀 수 있다
+const DEFAULT_CALL_MS = 60_000
+const call = (tool, args = {}, opts = {}) => bridgeCall(tool, args, { timeoutMs: DEFAULT_CALL_MS, ...opts })
 import { syncFromSamba } from './samba-sync.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -25,23 +29,41 @@ const STATE_FILE = join(DATA_DIR, 'state.json')
 const LOG_FILE = join(DATA_DIR, 'keeper.log')
 mkdirSync(DATA_DIR, { recursive: true })
 
-const cfg = JSON.parse(readFileSync(join(HERE, 'sites.json'), 'utf8'))
 // 한 사이트에 계정이 여럿이면 계정마다 프로필(쿠키 저장소)을 나눠 따로 점검·복구한다.
 // sites.json 의 site.accounts = [{ profile, accountLabel? }] — 키마스터 계정 라벨은 프로필 이름과 같게 두면 login 도구가 자동으로 고른다
-cfg.sites = cfg.sites.flatMap((site) => {
-  if (!Array.isArray(site.accounts) || site.accounts.length === 0) return [{ ...site, baseId: site.id, laneKey: site.id }]
-  return site.accounts.map((acc, i) => ({
-    ...site,
-    accounts: undefined,
-    baseId: site.id,
-    id: `${site.id}/${acc.profile}`,
-    laneKey: `${site.id}-${i + 1}`.replace(/[^A-Za-z0-9_.@-]/g, '_'),
-    label: `${site.label}(${acc.profile})`,
-    profile: acc.profile,
-    relogin: site.relogin ? { ...site.relogin, accountLabel: acc.accountLabel ?? acc.profile } : site.relogin
-  }))
-})
-const DEF = cfg.defaults
+function loadConfig() {
+  const c = JSON.parse(readFileSync(join(HERE, 'sites.json'), 'utf8'))
+  c.sites = c.sites
+    .filter((site) => site.enabled !== false)
+    .flatMap((site) => {
+      if (!Array.isArray(site.accounts) || site.accounts.length === 0) return [{ ...site, baseId: site.id, laneKey: site.id }]
+      return site.accounts.map((acc, i) => ({
+        ...site,
+        accounts: undefined,
+        baseId: site.id,
+        id: `${site.id}/${acc.profile}`,
+        laneKey: `${site.id}-${i + 1}`.replace(/[^A-Za-z0-9_.@-]/g, '_'),
+        label: `${site.label}(${acc.profile})`,
+        profile: acc.profile,
+        // 계정마다 복구 방식을 따로 줄 수 있다(acc.relogin) — 한 계정만 먼저 시험할 때 쓴다(2026-10-17 네이버)
+        relogin: (acc.relogin !== undefined ? acc.relogin : site.relogin)
+          ? { ...(acc.relogin ?? site.relogin), accountLabel: acc.accountLabel ?? acc.profile }
+          : null
+      }))
+    })
+  return c
+}
+let cfg = loadConfig()
+let DEF = cfg.defaults
+// watch 는 점검마다 sites.json 을 다시 읽는다 — 사이트를 늘리거나 고쳐도 재시작이 필요 없다. 깨진 파일이면 이전 설정을 그대로 쓴다
+function reloadConfig() {
+  try {
+    cfg = loadConfig()
+    DEF = cfg.defaults
+  } catch (e) {
+    log(`sites.json 을 읽지 못해 이전 설정으로 점검: ${String(e.message).slice(0, 80)}`)
+  }
+}
 
 const now = () => Date.now()
 const stamp = () => new Date().toLocaleString('ko-KR', { hour12: false })
@@ -102,8 +124,88 @@ async function closeLaneTabs(lane) {
   } catch {}
 }
 
+// 사이트 방화벽·접속 차단·오류 화면 — 이런 화면은 로그인 여부를 말해 주지 않는다(판정 불가)
+const BLOCKED_PAGE = /Web firewall|Access Denied|접근이 (차단|제한)|Request blocked|403 Forbidden|404 - page Not Found|일시적인 오류|Request Header Or Cookie Too Large|400 Bad Request/i
+
+// 판정 중 호출 하나가 기다리는 최대 시간. 부하로 앱이 늦어도 한 사이트가 점검 한 바퀴를 붙잡지 못하게 한다
+const PROBE_CALL_MS = 40_000
+
+// 쿠키가 쌓여 서버가 사이트 전체를 막는 화면 — 로그인 여부를 말해 주지 않지만, 그 사이트 쿠키를 지우면 풀린다
+const COOKIE_TOO_LARGE = /Request Header Or Cookie Too Large|400 Bad Request/i
+const COOKIE_TOO_LARGE_SEEN = '쿠키 과다 오류 화면'
+
+/**
+ * 주소로 판정한다(삼바 확장앱 자동 로그인과 같은 방식) — 로그인이 필요한 확인 페이지(probe.url)를 열어,
+ * 로그인 화면(probe.loginRe)으로 넘어가면 out, 그 페이지에 머물면 in. 차단·오류 화면이면 unknown
+ */
+async function probeByUrl(site, { keepTab = false } = {}) {
+  const lane = laneOf(site)
+  await closeLaneTabs(lane)
+  const r = await call('new_tab', { url: site.probe.url, profile: site.profile ?? DEF.profile }, { lane, retries: 2, timeoutMs: PROBE_CALL_MS })
+  const tabId = tabIdOf(r)
+  const loginRe = new RegExp(site.probe.loginRe, 'i')
+  const deadline = now() + (site.checkTimeoutSec ?? DEF.checkTimeoutSec) * 1000
+  let verdict = 'unknown'
+  let seen = ''
+  let stableIn = 0
+  try {
+    await sleep(site.probe.settleMs ?? 6000)
+    while (now() < deadline) {
+      let url = ''
+      try {
+        const tabs = JSON.parse(await call('list_tabs', {}, { lane, retries: 1, timeoutMs: PROBE_CALL_MS }))
+        url = (tabs.find((t) => t.id === tabId) ?? tabs[0])?.url ?? ''
+      } catch (e) {
+        seen = String(e.message).slice(0, 80)
+      }
+      if (url && loginRe.test(url)) {
+        verdict = 'out'
+        break
+      }
+      if (url && !/^about:|^samba:/.test(url)) {
+        let txt = ''
+        let readOk = true
+        try {
+          txt = await call('get_page', { query: site.probe.inText ?? '로그' }, { lane, retries: 1, timeoutMs: PROBE_CALL_MS })
+        } catch (e) {
+          readOk = false
+          seen = `페이지 조회 실패: ${String(e.message ?? e).slice(0, 40)}`
+        }
+        // 화면을 읽지 못했으면 '변함없음'의 증거가 아니다 — 연속 확인 횟수를 지우고 다시 본다
+        if (!readOk) {
+          stableIn = 0
+          await sleep(3000)
+          continue
+        }
+        if (COOKIE_TOO_LARGE.test(txt)) {
+          seen = COOKIE_TOO_LARGE_SEEN
+          break
+        }
+        if (BLOCKED_PAGE.test(txt)) {
+          seen = '사이트 차단·오류 화면'
+          break
+        }
+        if (site.probe.outText && new RegExp(site.probe.outText, 'i').test(txt)) {
+          verdict = 'out'
+          break
+        }
+        // 로그인 화면으로 늦게 넘어가는 사이트가 있어 두 번 연속 같은 결론일 때만 in
+        if (++stableIn >= 2) {
+          verdict = 'in'
+          break
+        }
+      }
+      await sleep(3000)
+    }
+  } finally {
+    if (!keepTab && tabId) await call('close_tab', { id: tabId }, { lane, retries: 1, timeoutMs: PROBE_CALL_MS }).catch(() => {})
+  }
+  return { verdict, seen }
+}
+
 /** 홈을 레인 탭으로 열어 로그인 표시를 읽는다. in | out | unknown */
 async function probeSignedIn(site, { keepTab = false } = {}) {
+  if (site.probe) return probeByUrl(site, { keepTab })
   const lane = laneOf(site)
   await closeLaneTabs(lane)
   const r = await call('new_tab', { url: site.home, profile: site.profile ?? DEF.profile }, { lane })
@@ -229,13 +331,16 @@ async function reloginNaverClick(site) {
   await closeLaneTabs(lane)
   const r = await call('new_tab', { url: site.relogin.loginUrl, profile: site.profile ?? DEF.profile }, { lane })
   const tabId = tabIdOf(r)
-  await sleep(5000)
-  // 이미 로그인돼 로그인 페이지가 홈으로 넘어간 경우
-  let els = parseElements(await call('find_elements', { query: site.relogin.text }, { lane }))
+  // 로그인 화면이 늦게 뜨는 사이트가 있어 버튼이 보일 때까지 최대 20초 다시 찾는다(2026-10-17 롯데ON '버튼을 찾지 못함' 실측 — 버튼은 있었다)
   // 버튼·링크를 우선하고, 이름이 짧은(=그 글자뿐인) 요소를 고른다 — 페이지 전체를 감싼 긴 clickable 을 누르지 않게
-  const btn = els
-    .filter((e) => /네이버|naver/i.test(e.name) && e.name.length <= 20 && /^(button|link|clickable)$/.test(e.role))
-    .sort((a, b) => (/^(button|link)$/.test(b.role) ? 1 : 0) - (/^(button|link)$/.test(a.role) ? 1 : 0) || a.name.length - b.name.length)[0]
+  let btn
+  for (let i = 0; i < 5 && !btn; i++) {
+    await sleep(i === 0 ? 5000 : 4000)
+    const els = parseElements(await call('find_elements', { query: site.relogin.text }, { lane }).catch(() => ''))
+    btn = els
+      .filter((e) => /네이버|naver/i.test(e.name) && e.name.length <= 20 && /^(button|link|clickable)$/.test(e.role))
+      .sort((a, b) => (/^(button|link)$/.test(b.role) ? 1 : 0) - (/^(button|link)$/.test(a.role) ? 1 : 0) || a.name.length - b.name.length)[0]
+  }
   if (!btn) {
     await closeLaneTabs(lane)
     return { ok: false, reason: '네이버 로그인 버튼을 찾지 못함' }
@@ -260,15 +365,75 @@ async function reloginNaverClick(site) {
   return reason ? { ok: false, reason } : { ok: true }
 }
 
+/** 제출 뒤에도 탭이 로그인 주소에 머물러 있으면 이름이 정확히 같은 버튼을 한 번 누른다 */
+async function clickSubmitIfStuck(lane, text) {
+  try {
+    await sleep(3000)
+    const tabs = JSON.parse(await call('list_tabs', {}, { lane }))
+    if (!tabs.length || !tabs.some((t) => /login|signin/i.test(t.url || ''))) return
+    const els = parseElements(await call('find_elements', { query: text }, { lane }))
+    const btn = els.find((e) => e.role === 'button' && e.name === text)
+    if (!btn) return
+    log(`login 제출이 먹지 않아 '${text}' 버튼을 직접 누름`)
+    await call('click', { id: btn.id, label: text }, { lane })
+  } catch (e) {
+    log(`제출 버튼 직접 클릭 실패: ${String(e.message ?? e).slice(0, 100)}`)
+  }
+}
+
 /** 키마스터에 저장된 계정으로 앱의 login 도구가 입력한다 — 비밀번호는 이 스크립트를 지나지 않는다 */
 async function reloginVault(site) {
   const lane = laneOf(site)
   await closeLaneTabs(lane)
   await call('new_tab', { url: site.relogin.loginUrl, profile: site.profile ?? DEF.profile }, { lane })
-  await sleep(6000)
+  // 로그인 화면이 실제로 뜰 때까지 기다린다 — 프록시를 거치는 프로필은 6초 안에 안 떠 login 도구가 'host unknown' 을 냈다(2026-10-17 ABC마트)
+  const wantHost = new URL(site.relogin.loginUrl).hostname.split('.').slice(-2).join('.')
+  const loadDeadline = now() + (site.relogin.loadWaitMs ?? 30_000)
+  await sleep(4000)
+  while (now() < loadDeadline) {
+    let url = ''
+    try {
+      url = JSON.parse(await call('list_tabs', {}, { lane }))[0]?.url ?? ''
+    } catch {}
+    if (url.includes(wantHost)) break
+    await sleep(2000)
+  }
+  await sleep(3000)
+  // 로그인 화면에서 먼저 눌러야 할 버튼이 있는 사이트(29CM: '무신사 통합계정 가입 및 로그인' → member.one.musinsa.com, 2026-10-24)
+  if (site.relogin.preClick) {
+    const hostWant = site.relogin.preClickHost ?? 'musinsa.com'
+    let moved = false
+    for (let i = 0; i < 8 && !moved; i++) {
+      try {
+        const els = parseElements(await call('find_elements', { query: site.relogin.preClick }, { lane }))
+        const btn = els.find((e) => e.role === 'button' && e.name === site.relogin.preClick)
+        if (btn) {
+          await call('click', { id: btn.id, label: site.relogin.preClick }, { lane })
+          for (let j = 0; j < 8 && !moved; j++) {
+            await sleep(2000)
+            const tabs = JSON.parse(await call('list_tabs', {}, { lane }))
+            moved = tabs.some((t) => (t.url || '').includes(hostWant))
+          }
+        } else await sleep(2500)
+      } catch {}
+    }
+    if (!moved) {
+      await closeLaneTabs(lane)
+      return { ok: false, reason: `'${site.relogin.preClick}' 버튼을 눌러도 ${hostWant} 로그인 화면으로 가지 않음` }
+    }
+    await sleep(3000)
+  }
   let res = ''
   try {
-    res = await call('login', site.relogin.accountLabel ? { accountLabel: site.relogin.accountLabel } : {}, { lane })
+    // 'host unknown: navigate to the site first' 는 login 도구가 아직 사이트 화면을 못 본 것이다(부하로 로딩이 늦음, SSF·LF몰 실측)
+    // — 로그인 화면으로 다시 이동해 잠깐 기다린 뒤 최대 2번 더 시도한다
+    for (let attempt = 0; attempt < 3; attempt++) {
+      res = await call('login', site.relogin.accountLabel ? { accountLabel: site.relogin.accountLabel } : {}, { lane })
+      if (!/^host unknown/i.test(res)) break
+      log(`[${site.id}] 로그인 화면을 아직 못 읽음 — 다시 이동 후 재시도(${attempt + 1}/2)`)
+      await call('navigate', { url: site.relogin.loginUrl }, { lane, retries: 1, timeoutMs: PROBE_CALL_MS }).catch(() => {})
+      await sleep(8000 + attempt * 6000)
+    }
   } catch (e) {
     await closeLaneTabs(lane)
     return { ok: false, reason: `login 도구 오류: ${String(e.message).slice(0, 100)}` }
@@ -285,6 +450,9 @@ async function reloginVault(site) {
     await closeLaneTabs(lane)
     return { ok: false, reason: `계정/금고 문제: ${res.replace(/\s+/g, ' ').slice(0, 80)}` }
   }
+  // login 도구가 '제출했다'고 답해도 아무 일도 안 일어나는 사이트(실측 2026-10-24: 무신사 통합 로그인 member.one.musinsa.com)는
+  // 같은 탭에 채워진 폼이 그대로 남는다 — relogin.submitClick 글자의 버튼을 직접 한 번 누른다(값은 이미 채워져 있어 비밀번호는 지나지 않는다)
+  if (site.relogin.submitClick && low.startsWith('submitted')) await clickSubmitIfStuck(lane, site.relogin.submitClick)
   // 제출 뒤 로그인 페이지를 벗어날 때까지 최대 30초
   const deadline = now() + 30_000
   while (now() < deadline) {
@@ -296,7 +464,8 @@ async function reloginVault(site) {
     if (tabs.length && tabs.every((t) => !/login|signin/i.test(t.url || ''))) break
   }
   // 네이버는 로그인 화면에 머물면 캡차·새 기기 인증·보호조치 가능성이 크다 — 더 누르지 않고 사람에게 넘긴다
-  if (site.role === 'naver') {
+  // (naverForm: 네이버 아이디로 로그인하는 다른 항목 — role 'naver' 는 네이버 열쇠 판정에 쓰여 따로 둔다)
+  if (site.role === 'naver' || site.naverForm) {
     let stuck = false
     try {
       const tabs = JSON.parse(await call('list_tabs', {}, { lane }))
@@ -360,7 +529,7 @@ function ensureAppWindow() {
 
 // 점검은 한 번에 하나만 돈다 — 두 점검이 같은 레인 탭을 서로 닫아 전부 '판정 불가'가 되는 것을 막는다(실측 2026-10-04)
 const CHECK_LOCK = join(DATA_DIR, 'check.lock')
-const CHECK_LOCK_STALE_MS = 20 * 60_000
+const CHECK_LOCK_STALE_MS = 90 * 60_000
 async function acquireCheckLock(waitMs = 25 * 60_000) {
   const t0 = now()
   for (;;) {
@@ -417,6 +586,28 @@ async function checkOnce(opts = {}) {
   }
 }
 
+/** 앱의 사이트별 쿠키 삭제 입구(POST /cookies/clear)를 부른다. { removed, failed, error } — 실패 원인을 로그에 남길 수 있게 구분해 돌려준다 */
+async function clearCookiesViaBridge(site) {
+  try {
+    const r = await postJson('/cookies/clear', { profile: site.profile ?? DEF.profile, host: site.cookieHost, automation: true })
+    if (r.status === 200 && r.json?.ok) return { removed: Number(r.json.removed) || 0, failed: Number(r.json.failed) || 0, error: '' }
+    return { removed: 0, failed: 0, error: `HTTP ${r.status} ${String(r.json?.error ?? '').slice(0, 40)}` }
+  } catch (e) {
+    return { removed: 0, failed: 0, error: String(e.message ?? e).slice(0, 60) }
+  }
+}
+
+/** 판정 한 번. 앱 응답 지연(BridgeTimeout)은 그 사이트만 '판정 불가'로 두고, 바빠서 못 했으면 null */
+async function probeSafe(site) {
+  try {
+    return await probeSignedIn(site)
+  } catch (e) {
+    if (e instanceof BridgeBusy) return null
+    if (e instanceof BridgeTimeout) return { verdict: 'unknown', seen: '앱 응답 지연' }
+    throw e
+  }
+}
+
 async function checkOnceInner({ only, dry = false } = {}) {
   const st = loadState()
   const tools = await health().catch((e) => {
@@ -442,17 +633,30 @@ async function checkOnceInner({ only, dry = false } = {}) {
         log(`[${site.id}] 앱이 바빠 점검을 건너뜀`)
         continue
       }
+      if (e instanceof BridgeTimeout) {
+        log(`[${site.id}] ${e.message} — 이 사이트는 판정 불가로 두고 다음으로`)
+        ss.checkedAt = now()
+        ss.status = 'unknown'
+        ss.detail = '판정 불가(앱 응답 지연)'
+        saveState(st)
+        continue
+      }
       throw e
+    }
+    // 쿠키 과다로 사이트가 막혔으면(site.cookieHost 가 있는 사이트) 그 사이트 쿠키만 지우고 다시 본다 — 지우면 로그아웃이 되므로 이어서 복구가 돈다
+    if (p.verdict === 'unknown' && p.seen === COOKIE_TOO_LARGE_SEEN && site.cookieHost && !dry) {
+      const cl = await clearCookiesViaBridge(site)
+      log(`[${site.id}] 쿠키 과다 — ${site.cookieHost} 쿠키 ${cl.removed}개 삭제${cl.failed ? `, ${cl.failed}개 못 지움` : ''}${cl.error ? ` (오류: ${cl.error})` : ''}`)
+      if (cl.removed > 0) {
+        ensureAppWindow()
+        p = (await probeSafe(site)) ?? p
+      }
     }
     // 로딩이 느려서 판정 못 한 경우 한 번 더 본다(복구 오발동은 막고, 일시 지연은 흡수한다)
     if (p.verdict === 'unknown') {
       log(`[${site.id}] 판정 불가 — 한 번 더 확인`)
       ensureAppWindow()
-      try {
-        p = await probeSignedIn(site)
-      } catch (e) {
-        if (!(e instanceof BridgeBusy)) throw e
-      }
+      p = (await probeSafe(site)) ?? p
     }
     ss.checkedAt = now()
     if (site.role === 'naver') naverIn = p.verdict === 'in' ? true : p.verdict === 'out' ? false : null
@@ -592,6 +796,27 @@ async function testRelogin(id) {
   return after.verdict === 'in'
 }
 
+// --- 삼바 설정탭 → 키마스터 자동 동기화 -------------------------------------
+// sites.json 의 sambaSync.autoEveryHours 마다 한 번(기본 끔). 비밀번호는 DB → 이 프로세스 메모리 → 로컬 앱으로만 가고
+// 로그에는 사이트별 건수만 남긴다. 키마스터가 잠겨 있거나 앱이 꺼져 있으면 다음 주기에 다시 한다
+async function autoSyncFromSamba() {
+  const hours = Number(cfg.sambaSync?.autoEveryHours ?? 0)
+  if (!hours) return
+  const st = loadState()
+  if (st.lastSambaSyncAt && now() - st.lastSambaSyncAt < hours * 3600_000) return
+  try {
+    const r = await syncFromSamba({ sites: cfg.sambaSync?.sites ?? ['ALL'] })
+    log(`삼바 계정 자동 동기화: ${JSON.stringify(r)}`)
+    if (r.sent > 0) {
+      const st2 = loadState()
+      st2.lastSambaSyncAt = now()
+      saveState(st2)
+    }
+  } catch (e) {
+    log(`삼바 계정 자동 동기화 실패: ${String(e.message ?? e).slice(0, 120)}`)
+  }
+}
+
 // --- 진입점 ----------------------------------------------------------------
 const argv = process.argv.slice(2)
 const cmd = argv[0] ?? 'once'
@@ -601,6 +826,92 @@ const opt = (name) => {
 }
 const flag = (name) => argv.includes(name)
 
+/**
+ * 다음 점검까지 쉬되, 그 사이 앱이 재시작되면 곧바로 깨어난다.
+ * 앱을 다시 켜면 세션 쿠키가 풀린 사이트가 생기므로 다음 정기 점검(수십 분)을 기다리지 않고 바로 훑는다.
+ * 재시작 신호 두 가지: ① 브릿지 연결이 두 번 연속 끊겼다가 돌아옴 ② 지켜 보던 계정 탭이 전부 사라짐(15초 안에 끝난 빠른 재시작).
+ * 앱이 바빠 409 를 주는 것은 종료가 아니므로 어느 쪽에도 세지 않는다
+ */
+async function sleepUnlessAppRestarted(totalMs) {
+  const end = now() + totalMs
+  let misses = 0
+  let wasDown = false
+  while (now() < end) {
+    await sleep(15_000)
+    let count = null
+    try {
+      count = JSON.parse(await call('list_tabs', {}, { lane: OPEN_TABS_LANE, retries: 1 })).length
+    } catch (e) {
+      if (e instanceof BridgeBusy) continue
+      if (++misses >= 2) wasDown = true
+      continue
+    }
+    misses = 0
+    // 세션 관리자가 열어 둔 계정 탭이 있었는데 레인이 비었으면 앱이 다시 켜진 것이다(15초 안에 끝난 재시작 포함)
+    if (wasDown || (openedByKeeper.size > 0 && count === 0)) {
+      log('앱 재시작 감지 — 30초 뒤 바로 점검')
+      await sleep(30_000)
+      await openAccountTabs().catch(() => {})
+      return
+    }
+  }
+}
+
+// 소싱처·계정별 탭을 열어 둔다 — 사이드바에 소싱처 묶음으로 보이고, 계정마다 로그인된 화면을 바로 볼 수 있다.
+// 앱을 재시작하면 탭이 사라지므로 재시작 감지 때와 세션 관리자 시작 때 연다(이미 이 레인 탭이 있으면 다시 열지 않는다).
+// 열 주소: site.openUrl → site.probe.url → site.home. site.openTab === false 이면 제외
+const OPEN_TABS_LANE = 'keeper-open-tabs'
+// 이 프로세스가 연 계정 탭: 탭 id → { id(소싱처), url, profile }. 계획과 비교해 빠진 것만 연다
+const openedByKeeper = new Map()
+const planKey = (p) => `${p.id}|${p.profile}`
+
+function accountTabPlan() {
+  const plan = []
+  for (const site of cfg.sites) {
+    if (site.openTab === false) continue
+    const url = site.openUrl ?? site.probe?.url ?? site.home
+    if (!url) continue
+    const profiles = site.accounts?.length ? site.accounts.map((a) => a.profile) : [site.profile ?? DEF.profile]
+    for (const profile of [...new Set(profiles)].filter((x) => !x.startsWith('tmp-'))) plan.push({ id: site.id, url, profile })
+  }
+  return plan
+}
+
+async function openAccountTabs() {
+  let existing = []
+  try {
+    existing = JSON.parse(await call('list_tabs', {}, { lane: OPEN_TABS_LANE }))
+  } catch (e) {
+    log(`계정 탭 열기 건너뜀: ${String(e.message ?? e).slice(0, 60)}`)
+    return
+  }
+  // 이전 세션 관리자가 연 탭은 어느 계정 것인지 알 수 없으니 닫고 새로 연다(레인은 세션 관리자 전용)
+  if (openedByKeeper.size === 0 && existing.length > 0) {
+    for (const t of existing) await call('close_tab', { id: t.id }, { lane: OPEN_TABS_LANE }).catch(() => {})
+    existing = []
+  }
+  // 사라진 탭(사용자가 닫음·앱 재시작)은 목록에서 뺀다
+  const alive = new Set(existing.map((t) => t.id))
+  for (const id of [...openedByKeeper.keys()]) if (!alive.has(id)) openedByKeeper.delete(id)
+  const have = new Set([...openedByKeeper.values()].map(planKey))
+  const todo = accountTabPlan().filter((p) => !have.has(planKey(p)))
+  if (todo.length === 0) return
+  const failed = []
+  let n = 0
+  for (const item of todo) {
+    try {
+      const r = await call('new_tab', { url: item.url, profile: item.profile }, { lane: OPEN_TABS_LANE })
+      openedByKeeper.set(tabIdOf(r), item)
+      n++
+    } catch (e) {
+      if (e instanceof BridgeDown) return
+      failed.push(item)
+    }
+    await sleep(2500)
+  }
+  log(`계정별 탭 ${n}개 열기${failed.length ? ` (실패 ${failed.length}개: ${failed.map((f) => f.profile).join(',')} — 다음 회차에 다시 시도)` : ''}`)
+}
+
 async function main() {
   if (cmd === 'status') return printStatus()
   if (cmd === 'once') {
@@ -609,10 +920,15 @@ async function main() {
   }
   if (cmd === 'sync-samba') {
     // 삼바웨이브 계정을 키마스터로 동기화(sites.json 의 sambaSync.sites, --sites 로 덮어쓸 수 있다)
-    const sites = (opt('--sites') ?? (cfg.sambaSync?.sites ?? ['MUSINSA']).join(',')).split(',').map((x) => x.trim()).filter(Boolean)
+    const sites = (opt('--sites') ?? (cfg.sambaSync?.sites ?? ['ALL']).join(',')).split(',').map((x) => x.trim()).filter(Boolean)
     const r = await syncFromSamba({ sites, dry: flag('--dry') })
     log(`삼바 계정 동기화: ${JSON.stringify(r)}`)
     say(JSON.stringify(r, null, 2))
+    if (!flag('--dry') && r.sent > 0) {
+      const st = loadState()
+      st.lastSambaSyncAt = now()
+      saveState(st)
+    }
     return
   }
   if (cmd === 'setup-accounts') {
@@ -678,7 +994,12 @@ async function main() {
     process.on('SIGTERM', () => process.exit(0))
     log(`세션 관리자 시작(pid ${process.pid})`)
     const base = Number(opt('--interval') ?? 15)
+    await openAccountTabs().catch(() => {})
     for (;;) {
+      reloadConfig()
+      // 앱이 점검 도중에 재시작돼 탭이 사라졌어도 다음 회차에서 다시 연다(이 레인 탭이 남아 있으면 아무것도 안 한다)
+      await openAccountTabs().catch(() => {})
+      await autoSyncFromSamba()
       try {
         printStatus(await checkOnce({ dry: flag('--dry') }))
       } catch (e) {
@@ -686,7 +1007,7 @@ async function main() {
         else log(`점검 오류: ${String(e.message ?? e).slice(0, 160)}`)
       }
       const wait = (base + (Math.random() * 4 - 2)) * 60_000 // ±2분 흔들림
-      await sleep(Math.max(60_000, wait))
+      await sleepUnlessAppRestarted(Math.max(60_000, wait))
     }
   }
   say('사용: node keeper.mjs once|watch|status|test-relogin [--site ID] [--dry] [--interval 분]')

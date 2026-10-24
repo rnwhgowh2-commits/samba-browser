@@ -4,6 +4,8 @@ import {
   SIDEBAR_ITEMS,
   SIDEBAR_SECTION_KEYS,
   canResizeSidebar,
+  groupTabsBySite,
+  siteGroupOf,
   isSectionOpen,
   showSectionBody,
   sidebarWidthOf,
@@ -191,5 +193,57 @@ describe('사이드바·모델 메뉴 i18n', () => {
       expect(koKeys).toContain(key)
       expect(enKeys).toContain(key)
     }
+  })
+})
+
+describe('열린 탭 소싱처별 묶기', () => {
+  it('주소의 소싱처 이름을 돌려준다(서브도메인 포함)', () => {
+    expect(siteGroupOf('https://www.musinsa.com/main')).toBe('무신사')
+    expect(siteGroupOf('https://my.musinsa.com/api2/member/v1/my-info')).toBe('무신사')
+    expect(siteGroupOf('https://abcmart.a-rt.com/mypage')).toBe('ABC마트')
+    expect(siteGroupOf('https://www.lfmall.co.kr/app/login')).toBe('LF몰')
+    expect(siteGroupOf('http://localhost:3000/samba/rewards')).toBe('삼바웨이브')
+  })
+
+  it('이름표에 없는 사이트는 등록 도메인으로, 웹 주소가 아니면 빈 값', () => {
+    expect(siteGroupOf('https://shop.example.co.kr/a')).toBe('example.co.kr')
+    expect(siteGroupOf('about:blank')).toBe('')
+    expect(siteGroupOf('')).toBe('')
+  })
+
+  it('이름이 비슷한 다른 도메인은 섞이지 않는다', () => {
+    expect(siteGroupOf('https://notmusinsa.com/')).toBe('notmusinsa.com')
+    expect(siteGroupOf('https://musinsa.com.evil.com/')).toBe('evil.com')
+  })
+
+  it('묶음은 첫 탭 순서, 묶음 안은 원래 탭 순서를 지킨다', () => {
+    const tabs = [
+      { id: 'a', url: 'https://www.musinsa.com/1' },
+      { id: 'b', url: 'https://www.lfmall.co.kr/1' },
+      { id: 'c', url: 'https://my.musinsa.com/2' },
+      { id: 'd', url: 'about:blank' }
+    ]
+    const groups = groupTabsBySite(tabs, '기타')
+    expect(groups.map((g) => g.label)).toEqual(['무신사', 'LF몰', '기타'])
+    expect(groups[0].tabs.map((t) => t.id)).toEqual(['a', 'c'])
+    expect(groups[2].key).toBe('')
+  })
+
+  it('탭이 없으면 묶음도 없다', () => {
+    expect(groupTabsBySite([], '기타')).toEqual([])
+  })
+})
+
+describe('주소가 아직 안 뜬 탭', () => {
+  it('프로필의 소싱처 묶음에 넣는다', () => {
+    const tabs = [
+      { id: 'a', url: '', profileSite: 'MUSINSA' },
+      { id: 'b', url: 'https://www.musinsa.com/x' },
+      { id: 'c', url: 'about:blank', profileSite: 'LFmall' },
+      { id: 'd', url: '' }
+    ]
+    const g = groupTabsBySite(tabs, '기타')
+    expect(g.map((x) => x.label)).toEqual(['무신사', 'LF몰', '기타'])
+    expect(g[0].tabs.map((t) => t.id)).toEqual(['a', 'b'])
   })
 })
