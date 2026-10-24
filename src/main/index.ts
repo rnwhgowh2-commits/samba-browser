@@ -6,6 +6,7 @@ import { TabManager } from './browser/tab-manager'
 import { setExtensionTabsProvider } from './extensions/tabs-bridge'
 import { installExtensionPageApi } from './extensions/page-api'
 import { markQuitting } from './browser/popups'
+import { flushAllCookieStores } from './browser/session-cookies'
 import { registerInternalProtocol, registerInternalScheme } from './browser/internal-protocol'
 import { registerIpc } from './ipc/handlers'
 import { registerFaviconIpc } from './ipc/favicon'
@@ -175,5 +176,7 @@ app.on('window-all-closed', () => {
 // preventDefault 로 종료 자체를 취소해, DB·금고만 닫힌 좀비 앱이 남는다
 app.on('before-quit', () => {
   markQuitting()
+  // 쿠키 저장소도 디스크에 내려 둔다(정상 종료가 마저 쓰지만, 늦어지는 종료에도 안전하게)
+  void flushAllCookieStores()
   shutdown()
 })
