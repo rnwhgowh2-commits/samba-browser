@@ -275,7 +275,12 @@
         "type": "vault_login",
         "loginUrl": "https://signin.gmarket.co.kr/LogIn/LogIn"
       },
-      "_복구메모": "설정탭 계정 ditodalal = 네이버 간편로그인(기본 프로필 네이버와 같은 계정). 아이디·비밀번호 입력은 2026-10-17 실패 → 네이버 버튼 2026-10-24 사장님 지시: 네이버 로그인 말고 사이트 계정(아이디·비밀번호)으로 직접 로그인 → vault_login"
+      "_복구메모": "설정탭 계정 ditodalal = 네이버 간편로그인(기본 프로필 네이버와 같은 계정). 아이디·비밀번호 입력은 2026-10-17 실패 → 네이버 버튼 2026-10-24 사장님 지시: 네이버 로그인 말고 사이트 계정(아이디·비밀번호)으로 직접 로그인 → vault_login",
+      "budget": {
+        "perDay": 2,
+        "minGapMin": 180,
+        "maxConsecutiveFails": 2
+      }
     },
     {
       "id": "LFmall",
@@ -409,7 +414,12 @@
         "loginRe": "okcashbag\\.com/login"
       },
       "_relogin_보류": "설정탭 로그인 방식 = 카카오(자동 로그인 전략 없음) — 사람이 로그인",
-      "relogin": null
+      "relogin": null,
+      "budget": {
+        "perDay": 2,
+        "minGapMin": 180,
+        "maxConsecutiveFails": 2
+      }
     },
     {
       "id": "LEE",
@@ -453,7 +463,12 @@
         "type": "vault_login",
         "loginUrl": "https://www.nike.com/kr/login"
       },
-      "_메모": "2026-10-24 추가. 삼바 설정탭 계정 rnwhgowh2@gmail.com(id_pw). 로그인 화면은 accounts.nike.com 이메일→비밀번호 2단계. 키마스터에 계정이 들어가야(삼바계정_키마스터로_동기화.cmd) 복구가 된다"
+      "_메모": "2026-10-24 추가. 삼바 설정탭 계정 rnwhgowh2@gmail.com(id_pw). 로그인 화면은 accounts.nike.com 이메일→비밀번호 2단계. 키마스터에 계정이 들어가야(삼바계정_키마스터로_동기화.cmd) 복구가 된다",
+      "budget": {
+        "perDay": 2,
+        "minGapMin": 180,
+        "maxConsecutiveFails": 2
+      }
     }
   ]
 }
