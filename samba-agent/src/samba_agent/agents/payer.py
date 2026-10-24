@@ -349,6 +349,10 @@ def order_form_mismatch(
     # 글자 사이즈(S·M·L…) — 구매가 고른 옵션(selected)의 사이즈 글자가 주문과 다르면 결제하지 않는다
     # (실기 2026-10-18 무신사 지오다노 2건: 주문 M 인데 S 로 담겨 결제됐다 — 숫자 사이즈만 대조해 통과했다)
     ordered_letters = size_letters(option or '')
+    # 주문 옵션에 진짜 사이즈 글자와 FREE·ONE 이 같이 있으면(무신사 'XL_105 FREE 품번') FREE·ONE 은 품번 쪽 글자라 뺀다
+    # (실기 2026-10-24 무신사 3060: 주문서 XL 이 맞는데 ['FREE','XL'] 주문이라며 결제를 막았다)
+    if len(ordered_letters) > 1:
+        ordered_letters = ordered_letters - {'FREE', 'ONE'} or ordered_letters
     chosen_letters = size_letters(selected or '')
     # 선택 글자에 상품명 속 글자(예: 'M Logo' 의 M)가 섞여 들어온 경우 — 주문 사이즈가 그 안에 있으면 상품명 글자는 뺀다
     # (실기 2026-10-21 무신사 지프 맨투맨: 주문 S, 상품명 'M Logo' → ['M','S'] 로 읽혀 멈췄다)

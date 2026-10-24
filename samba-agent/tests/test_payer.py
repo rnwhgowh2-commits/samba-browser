@@ -134,7 +134,7 @@ def test_캡차는_사람에게_넘긴다(reg):
     respx.post(f'{URL}/tool/progress').mock(return_value=page('ok'))
     respx.post(f'{URL}/tool/wait').mock(return_value=page('ok'))
     out = agent(reg)(assignment(reg, dry_run=False))
-    assert (out.status, out.fail_reason) == ('needs_human', FailReason.CAPTCHA)
+    assert (out.status, out.fail_reason) == ('needs_ai', FailReason.CAPTCHA)
 
 
 @respx.mock
@@ -148,7 +148,7 @@ def test_폰_승인이_거절되면_사람에게_넘긴다(reg):
     respx.post(f'{URL}/tool/progress').mock(return_value=page('ok'))
     respx.post(f'{URL}/tool/wait').mock(return_value=page('ok'))
     out = agent(reg)(assignment(reg, dry_run=False))
-    assert out.status == 'needs_human'
+    assert out.status == 'needs_ai'
     assert out.fail_reason is FailReason.UNKNOWN
 
 
@@ -164,7 +164,7 @@ def test_성공_문구를_못_보면_ok_를_내지_않는다(reg):
     respx.post(f'{URL}/tool/progress').mock(return_value=page('ok'))
     respx.post(f'{URL}/tool/wait').mock(return_value=page('ok'))
     out = agent(reg)(assignment(reg, dry_run=False))
-    assert (out.status, out.fail_reason) == ('needs_human', FailReason.VERIFY_MISMATCH)
+    assert (out.status, out.fail_reason) == ('needs_ai', FailReason.VERIFY_MISMATCH)
     assert '결제됐는지' in out.reason
 
 
@@ -218,6 +218,15 @@ def _enter_expect(reg, a, form: str = '주문서') -> dict:
 
 
 @respx.mock
+def test_스트리트톡_표기차이는_통과하고_다른사이즈는_막는다():
+    from samba_agent.agents.payer import order_form_mismatch
+    name = '아디다스 스트리트톡 스니커즈 로우탑 블랙 여성'
+    assert order_form_mismatch('스트릿톡 JR4700 BLACK 270', name, '270') is None
+    assert order_form_mismatch('스트릿톡 JR4700 BLACK 250', name, '270') is not None
+    assert order_form_mismatch('아디다스 삼바 OG BLACK 270', name, '270') is not None
+
+
+@respx.mock
 def test_교차_구매면_expect_는_산_사이트의_상품번호와_상품명을_쓴다(reg):
     """무신사 주문을 29CM 에서 샀다 — 주문 URL(무신사) 번호·삼바 상품명이 아니라 구매 인계값으로 대조한다."""
     a = assignment(
@@ -240,7 +249,7 @@ def test_교차_구매_주문서에_산_상품명이_없으면_결제하지_않�
     respx.post(f'{URL}/tool/wait').mock(return_value=page('ok'))
     respx.post(f'{URL}/tool/get_page').mock(return_value=page('주문서 후디 XS 1개'))
     out = agent(reg)(a)
-    assert (out.status, out.fail_reason) == ('needs_human', FailReason.VERIFY_MISMATCH)
+    assert (out.status, out.fail_reason) == ('needs_ai', FailReason.VERIFY_MISMATCH)
 
 
 @respx.mock
@@ -303,12 +312,12 @@ def test_카드를_못_찾으면_카드_없음으로_분류한다(reg):
 @pytest.mark.parametrize(
     ('refusal', 'reason'),
     [
-        ('refused: pay-account-ambiguous (choose payAccount: a, b)', FailReason.UNKNOWN),
-        ('refused: pay-account-mismatch (a != b)', FailReason.UNKNOWN),
-        ('refused: no-account', FailReason.UNKNOWN),
+        ('refused: pay-account-ambiguous (choose payAccount: a, b)', FailReason.PAY_INTERRUPTED),
+        ('refused: pay-account-mismatch (a != b)', FailReason.PAY_INTERRUPTED),
+        ('refused: no-account', FailReason.PAY_INTERRUPTED),
         # 금고 잠김은 다시 해도 같다 — 권한 부족으로 분류해 재시도를 막는다(리뷰 지적 — I5)
         ('refused: vault-locked', FailReason.PERMISSION_DENIED),
-        ('refused: verify-failed', FailReason.UNKNOWN),
+        ('refused: verify-failed', FailReason.PAY_INTERRUPTED),
     ],
 )
 @respx.mock
@@ -322,7 +331,7 @@ def test_계정_모호_불일치_잠김_인증실패는_사람에게_넘기고_�
     respx.post(f'{URL}/tool/progress').mock(return_value=page('ok'))
     respx.post(f'{URL}/tool/wait').mock(return_value=page('ok'))
     out = agent(reg)(assignment(reg, dry_run=False))
-    assert (out.status, out.fail_reason) == ('needs_human', reason)
+    assert (out.status, out.fail_reason) == ('needs_ai', reason)
     # refused: 뒤 사유 원문(비밀 없음)이 reason 에 남는다 — 사람이 무엇 때문인지 바로 안다
     assert refusal.removeprefix('refused:').strip()[:20] in out.reason
 
@@ -338,7 +347,7 @@ def test_거절_한글_표기도_사람에게_넘긴다(reg):
     respx.post(f'{URL}/tool/progress').mock(return_value=page('ok'))
     respx.post(f'{URL}/tool/wait').mock(return_value=page('ok'))
     out = agent(reg)(assignment(reg, dry_run=False))
-    assert (out.status, out.fail_reason) == ('needs_human', FailReason.UNKNOWN)
+    assert (out.status, out.fail_reason) == ('needs_ai', FailReason.PAY_INTERRUPTED)
 
 
 @respx.mock
@@ -360,7 +369,7 @@ def test_결제_에이전트는_재시도하지_않는다(reg):
     respx.post(f'{URL}/tool/progress').mock(return_value=page('ok'))
     respx.post(f'{URL}/tool/wait').mock(return_value=page('ok'))
     out = agent(reg)(assignment(reg, dry_run=False))
-    assert out.status == 'needs_human'
+    assert out.status == 'needs_ai'
     assert pay.calls.call_count == 1  # 거절돼도 다시 부르지 않는다
 
 
@@ -389,7 +398,7 @@ def test_이미_결제된_화면이면_폰_승인을_부르지_않는다(reg):
     respx.post(f'{URL}/tool/progress').mock(return_value=page('ok'))
     respx.post(f'{URL}/tool/wait').mock(return_value=page('ok'))
     out = agent(reg)(assignment(reg, dry_run=False))
-    assert (out.status, out.fail_reason) == ('needs_human', FailReason.PAY_INTERRUPTED)
+    assert (out.status, out.fail_reason) == ('needs_ai', FailReason.PAY_INTERRUPTED)
     assert not pay.called
     assert not fill.called
 
@@ -535,7 +544,7 @@ def test_금액을_모르면_결제하지_않는다(reg):
     # amountKrw 는 양의 정수여야 한다 — 모르면 결제 자체를 하지 않는다
     _fill, pay = _full_pay_mocks()
     out = agent(reg)(assignment(reg, dry_run=False, handoff={'cost': None}))
-    assert out.status == 'needs_human'
+    assert out.status == 'needs_ai'
     assert not pay.called
 
 
@@ -553,7 +562,7 @@ def test_결제앱을_정할_수_없으면_폰_승인_없이_웹_결제_경로�
 @respx.mock
 def test_list_tabs가_실패하면_사람에게_넘긴다(reg):
     # 결제창을 못 본 채로 결제 앱을 찍어 승인하면 안 된다 — list_tabs 자체가 실패하면
-    # (브릿지 오류 등) needs_human 이다
+    # (브릿지 오류 등) needs_ai 이다
     respx.post(f'{URL}/tool/run_script').mock(return_value=page(ENTER_OK))
     respx.post(f'{URL}/tool/get_page').mock(return_value=page('결제 진행 중'))
     respx.post(f'{URL}/tool/find_elements').mock(return_value=page('[12] textbox "주문자 이름"'))
@@ -565,7 +574,7 @@ def test_list_tabs가_실패하면_사람에게_넘긴다(reg):
     respx.post(f'{URL}/tool/wait').mock(return_value=page('ok'))
     pay = respx.post(f'{URL}/tool/phone_approve_payment').mock(return_value=page('ok'))
     out = agent(reg)(assignment(reg, dry_run=False, card='현대카드', handoff={'cost': 89000}))
-    assert out.status == 'needs_human'
+    assert out.status == 'needs_ai'
     assert not pay.called
 
 
@@ -590,7 +599,7 @@ def test_신원정보_입력칸이_없어도_웹_결제_경로로_진행한다(r
 @respx.mock
 def test_list_tabs_실패_사유는_원래_fail_reason을_그대로_남긴다(reg):
     # 리뷰 지적 — Minor 3: list_tabs 의 AgentFailure 를 UNKNOWN 으로 재포장하지 않는다.
-    # 403 은 브릿지가 PERMISSION_DENIED 로 분류한다(client.py) — needs_human 으로 넘어가도
+    # 403 은 브릿지가 PERMISSION_DENIED 로 분류한다(client.py) — needs_ai 으로 넘어가도
     # 그 사유가 그대로 남아야 한다
     respx.post(f'{URL}/tool/run_script').mock(return_value=page(ENTER_OK))
     respx.post(f'{URL}/tool/get_page').mock(return_value=page('결제 진행 중'))
@@ -603,7 +612,7 @@ def test_list_tabs_실패_사유는_원래_fail_reason을_그대로_남긴다(re
     respx.post(f'{URL}/tool/wait').mock(return_value=page('ok'))
     pay = respx.post(f'{URL}/tool/phone_approve_payment').mock(return_value=page('ok'))
     out = agent(reg)(assignment(reg, dry_run=False, card='현대카드', handoff={'cost': 89000}))
-    assert out.status == 'needs_human'
+    assert out.status == 'needs_ai'
     assert out.fail_reason is FailReason.PERMISSION_DENIED
     assert not pay.called
 
@@ -703,7 +712,7 @@ def test_매칭_팝업이_둘이고_서로_다른_provider면_사람에게_넘�
     respx.post(f'{URL}/tool/progress').mock(return_value=page('ok'))
     respx.post(f'{URL}/tool/wait').mock(return_value=page('ok'))
     out = agent(reg)(assignment(reg, dry_run=False, card='현대카드', handoff={'cost': 89000}))
-    assert out.status == 'needs_human'
+    assert out.status == 'needs_ai'
     assert not pay.called
     assert 'pay.toss.im' in out.reason or 'tosspayments' in out.reason
     assert 'pay.naver.com' in out.reason
@@ -853,7 +862,7 @@ def test_시험_입력이_아닌_응답이_오면_사람에게_넘긴다(reg):
     respx.post(f'{URL}/tool/wait').mock(return_value=page('ok'))
     respx.post(f'{URL}/tool/phone_approve_payment').mock(return_value=page('ok'))
     out = agent(reg)(assignment(reg, dry_run=True, dry_run_digits=3))
-    assert (out.status, out.fail_reason) == ('needs_human', FailReason.PAY_INTERRUPTED)
+    assert (out.status, out.fail_reason) == ('needs_ai', FailReason.PAY_INTERRUPTED)
 
 
 @respx.mock
@@ -920,7 +929,7 @@ def test_결제_직전_재조회에서_상태가_바뀌었으면_사람에게_�
     respx.post(f'{URL}/tool/progress').mock(return_value=page('ok'))
     respx.post(f'{URL}/tool/wait').mock(return_value=page('ok'))
     out = agent_with_wave(reg)(assignment(reg, dry_run=True))
-    assert out.status == 'needs_human'
+    assert out.status == 'needs_ai'
     assert out.reason == '상태 변경: cancelled'
     assert not enter.called
 
@@ -932,7 +941,7 @@ def test_결제_직전_재조회가_실패하면_결제하지_않는다(reg):
     respx.post(f'{URL}/tool/progress').mock(return_value=page('ok'))
     respx.post(f'{URL}/tool/wait').mock(return_value=page('ok'))
     out = agent_with_wave(reg)(assignment(reg, dry_run=False))
-    assert out.status == 'needs_human'
+    assert out.status == 'needs_ai'
     assert not enter.called
 
 
@@ -1000,7 +1009,7 @@ def test_결제창_진입_실패면_비밀번호_단계로_가지_않는다(reg)
     respx.post(f'{URL}/tool/wait').mock(return_value=page('ok'))
     fill = respx.post(f'{URL}/tool/fill_secret')
     out = agent(reg)(assignment(reg, dry_run=False))
-    assert out.status == 'needs_human'
+    assert out.status == 'needs_ai'
     assert 'method-not-found' in out.reason
     assert not fill.called
 
@@ -1276,7 +1285,7 @@ def test_결제창이_네이버_로그인_화면이면_비밀번호를_넣지_�
     get_page = respx.post(f'{URL}/tool/get_page').mock(return_value=page(''))
     with pytest.raises(AgentFailure) as e:
         a._web_pay(assignment(reg, dry_run=False, card='네이버페이', handoff={'account': 'buyer02'}))
-    assert e.value.status == 'needs_human'
+    assert e.value.status == 'needs_ai'
     assert '로그인' in e.value.reason and 'buyer02' in e.value.reason
     assert login.call_count == 1
     assert not fill.called
@@ -1318,8 +1327,9 @@ def test_키패드가_끝내_없으면_상한까지만_부르고_결제확인으
     get_page = respx.post(f'{URL}/tool/get_page').mock(return_value=page(''))
     with pytest.raises(AgentFailure) as e:
         a._web_pay(assignment(reg, dry_run=False, card='네이버페이'))
-    assert e.value.status == 'needs_human'
-    assert '키패드가 뜨지 않았다' in e.value.reason and '결제 안 됨' in e.value.reason
+    assert e.value.status == 'needs_ai'
+    assert '키패드가 뜨지 않았다' in e.value.reason and '재결제 금지' in e.value.reason
+    assert e.value.fail_reason == FailReason.PAY_INTERRUPTED
     assert fill.call_count == KEYPAD_FILL_MAX_CALLS
     assert not get_page.called
 
@@ -1347,6 +1357,37 @@ def test_아직_키패드_아님_이외의_답이_한번이라도_오면_다시_
         a._web_pay(assignment(reg, dry_run=False, card='네이버페이'))
     except AgentFailure:
         pass  # 멈추든 넘어가든 — 다시 누르지만 않으면 된다
+    assert fill.call_count == 1
+
+
+@respx.mock
+def test_active_same_account_completion_skips_password_search(reg, monkeypatch):
+    from samba_agent.agents.payer import NO_KEYPAD_PAID
+
+    a = _web_pay_agent(reg, monkeypatch)
+    respx.post(f'{URL}/tool/list_tabs').mock(return_value=page(json.dumps([{
+        'id': 'paid', 'kind': 'tab', 'active': True, 'profile': 'buyer01',
+        'url': 'https://www.musinsa.com/order/result/202610121149010003',
+    }])))
+    fill = respx.post(f'{URL}/tool/fill_secret').mock(return_value=page('unexpected'))
+    find = respx.post(f'{URL}/tool/find_elements').mock(return_value=page(''))
+    assert a._press_keypad(assignment(reg, dry_run=False), 'musinsapay', 'buyer01') == NO_KEYPAD_PAID
+    assert not fill.called and not find.called
+
+
+@pytest.mark.parametrize('active,profile,dry', [
+    (False, 'buyer01', None), (True, 'other', None), (True, 'buyer01', 2),
+])
+@respx.mock
+def test_completion_shortcut_rejects_other_tabs_accounts_and_dry_run(reg, monkeypatch, active, profile, dry):
+    a = _web_pay_agent(reg, monkeypatch)
+    respx.post(f'{URL}/tool/list_tabs').mock(return_value=page(json.dumps([{
+        'id': 'old', 'kind': 'tab', 'active': active, 'profile': profile,
+        'url': 'https://www.musinsa.com/order/result/202610121149010003',
+    }])))
+    respx.post(f'{URL}/tool/find_elements').mock(return_value=page('[3] button "1"'))
+    fill = respx.post(f'{URL}/tool/fill_secret').mock(return_value=page('ok: entered'))
+    assert a._press_keypad(assignment(reg, dry_run=False), 'musinsapay', 'buyer01', dry) == 'ok: entered'
     assert fill.call_count == 1
 
 
@@ -1694,3 +1735,11 @@ def test_알림_대기_화면으로_안_넘어가면_사람에게_넘긴다(reg)
     _toss_tools(a, [TOSS_LOGIN, TOSS_LOGIN, TOSS_LOGIN], lambda kw: 'ok')
     with pytest.raises(AgentFailure, match='알림 대기 화면'):
         a._toss_phone_request(assignment(reg, dry_run=False))
+
+
+def test_옵션에_FREE_품번이_섞여도_진짜_사이즈_글자로_대조한다():
+    from samba_agent.agents.payer import order_form_mismatch
+    name = '테스트 반팔 티셔츠'
+    option = 'XL_105 FREE K5123ERL36PNK'
+    assert order_form_mismatch('테스트 반팔 티셔츠 XL 105', name, option, 'XL') is None
+    assert order_form_mismatch('테스트 반팔 티셔츠 L 100', name, option, 'L') is not None
