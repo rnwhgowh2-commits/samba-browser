@@ -37,6 +37,8 @@ import {
 import { DEFAULT_FIELD_KEY } from '../vault/fields'
 import { formatDialogNote } from '../browser/dialogs'
 import { createOcrTool, ocrDigitInRegion, resolveKeypadDigits, type DigitRead } from './tools-ocr'
+import { createNetworkTools, NETWORK_TOOL_NAMES } from './tools-network'
+import { createPageTools, PAGE_TOOL_NAMES } from './tools-page'
 import {
   createPayTool,
   createPhoneTools,
@@ -2493,6 +2495,8 @@ ${submittedNote}`
     findElements,
     screenshot,
     createOcrTool(ctx),
+    ...createNetworkTools(ctx),
+    ...createPageTools(ctx),
     navigate,
     click,
     typeTool,
@@ -2532,6 +2536,10 @@ export const SAMBA_TOOL_NAMES = [
   'find_elements',
   'screenshot',
   'ocr',
+  // 네트워크 기록(개발자도구 Network 대신) — 조회 전용
+  ...NETWORK_TOOL_NAMES,
+  // 페이지 안 JS 실행·콘솔 읽기·요청 가로채기(옛 Aside REPL 대신)
+  ...PAGE_TOOL_NAMES,
   'navigate',
   'click',
   'type',
