@@ -255,9 +255,11 @@ export function createOcrTool(ctx: ToolContext): SdkMcpToolDefinition<typeof ocr
           ctx.onStep(STEP_LABEL, false)
           return textResult('refused: region is outside the page')
         }
-        const image = rect
-          ? await tab.view.webContents.capturePage(rect)
-          : await tab.view.webContents.capturePage()
+        const capture = (): ReturnType<typeof tab.view.webContents.capturePage> =>
+          rect ? tab.view.webContents.capturePage(rect) : tab.view.webContents.capturePage()
+        const image = ctx.tabs.withCapture
+          ? await ctx.tabs.withCapture(tab.id, capture)
+          : await capture()
         const { width, height } = image.getSize()
         if (width === 0 || height === 0) {
           ctx.onStep(STEP_LABEL, false)

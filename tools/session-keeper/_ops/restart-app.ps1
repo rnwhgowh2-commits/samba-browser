@@ -1,13 +1,14 @@
 ﻿$res = 'C:\Users\rnwhg\Desktop\samba-work\restart-app.result.txt'
 try {
   $root = 'C:\Users\rnwhg\Desktop\samba-browser'
-  $exe = Join-Path $root 'node_modules\.pnpm\electron@39.8.10\node_modules\electron\dist\electron.exe'
+  # 설치된 버전의 진입점을 사용한다. 옛 엔진 경로를 고정하면 재시작 때 수정 전 엔진으로 돌아간다.
+  $exe = Join-Path $root 'node_modules\electron\dist\electron.exe'
   $log = @()
   # 삼바 브라우저 앱 메인 프로세스 = 같은 electron.exe 중 하위 프로세스(--type=)가 아니고 앱 폴더를 인자로 받은 것.
   # 같은 electron.exe 를 쓰는 다른 프로그램(하네스·시험 등)은 건드리지 않는다
   function Get-AppMains {
     @(Get-CimInstance Win32_Process | Where-Object {
-      $_.ExecutablePath -eq $exe -and $_.CommandLine -notmatch '--type=' -and
+      $_.ExecutablePath -like "$root\node_modules\*\electron\dist\electron.exe" -and $_.CommandLine -notmatch '--type=' -and
       ($_.CommandLine -replace '"','').TrimEnd() -like "*$root"
     })
   }

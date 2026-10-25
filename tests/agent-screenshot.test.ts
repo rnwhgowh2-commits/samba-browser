@@ -70,6 +70,7 @@ function build(opts: {
   steps: Array<{ label: string; ok: boolean }>
   repaint: ReturnType<typeof vi.fn>
   front: ReturnType<typeof vi.fn>
+  capture: ReturnType<typeof vi.fn>
 } {
   const bounds = opts.bounds ?? { width: 800, height: 600 }
   const capturePage = opts.capturePage ?? (async () => fakeNativeImage(2560, 1440))
@@ -88,8 +89,10 @@ function build(opts: {
   const steps: Array<{ label: string; ok: boolean }> = []
   const repaint = vi.fn(() => opts.repaintResult ?? true)
   const front = vi.fn(async (_id: string, fn: () => Promise<unknown>) => fn())
+  const capture = vi.fn(async (_id: string, fn: () => Promise<unknown>) => fn())
   const tabs = {
     withFront: front,
+    withCapture: capture,
     repaintTab: repaint,
     active: () => (opts.hasTab === false ? null : fakeTab),
     create: vi.fn(),
@@ -107,7 +110,7 @@ function build(opts: {
     onStep: (label, ok) => steps.push({ label, ok })
   }
   const server = createSambaTools(ctx) as unknown as { tools: ToolStub[] }
-  return { tools: server.tools, steps, repaint, front }
+  return { tools: server.tools, steps, repaint, front, capture }
 }
 
 const get = (tools: ToolStub[], name: string): ToolStub => tools.find((t) => t.name === name)!
@@ -130,7 +133,7 @@ describe('screenshot 도구', () => {
     expect(restored).toBe(true)
   })
   it('활성 탭을 캡처해 image 블록과 text 블록을 함께 돌려준다', async () => {
-    const { tools, steps } = build({})
+    const { tools, steps, capture, front } = build({})
     const r = await get(tools, 'screenshot').handler({})
     expect(r.content).toHaveLength(2)
     const image = r.content.find((c): c is ImageBlock => c.type === 'image')
@@ -141,6 +144,8 @@ describe('screenshot 도구', () => {
     expect(textBlock).toBeDefined()
     expect(textBlock!.text).toContain('shop.example')
     expect(steps.at(-1)).toEqual({ label: '화면 캡처', ok: true })
+    expect(capture).toHaveBeenCalledWith('t1', expect.any(Function))
+    expect(front).not.toHaveBeenCalled()
   })
 
   it('read_only 모드에서도 허용된다', async () => {
@@ -201,5 +206,31 @@ describe('screenshot 도구', () => {
     const { tools, repaint } = build({})
     await get(tools, 'screenshot').handler({})
     expect(repaint).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [0, 0],
+    [0, 600],
+    [800, 0]
+  ])('빈 이미지 %ix%i를 성공으로 반환하지 않는다', async (w, h) => {
+    const { tools, steps, repaint } = build({ capturePage: async () => fakeNativeImage(w, h) })
+    const r = await get(tools, 'screenshot').handler({})
+    expect(r.content).toEqual([
+      {
+        type: 'text',
+        text: 'error: screenshot is empty - the display surface is not ready. Try again.'
+      }
+    ])
+    expect(repaint).toHaveBeenCalledWith('t1', 'capture-empty')
+    expect(steps.at(-1)).toEqual({ label: '화면 캡처', ok: false })
+  })
+
+  it('크기가 있어도 JPEG가 비어 있으면 성공으로 반환하지 않는다', async () => {
+    const image = fakeNativeImage(800, 600)
+    image.toJPEG = () => Buffer.alloc(0)
+    const { tools, steps } = build({ capturePage: async () => image })
+    const r = await get(tools, 'screenshot').handler({})
+    expect(r.content).toEqual([{ type: 'text', text: 'error: screenshot could not be encoded' }])
+    expect(steps.at(-1)).toEqual({ label: '화면 캡처', ok: false })
   })
 })

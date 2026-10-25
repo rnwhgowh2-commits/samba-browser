@@ -300,6 +300,8 @@ export class TabManager {
   // A→B→A로 빠르게 돌아와도 첫 A의 복구 예약이 새 A에 끼어들지 않게 한다.
   private activationEpoch = 0
   private repaintingViews = new WeakSet<WebContentsView>()
+  // 캡처 중에는 Chromium의 capturer count가 그리기를 관리한다. 중첩 호출의 마지막에만 뒤 탭 상태를 복원한다.
+  private capturingViews = new WeakMap<WebContentsView, number>()
   // AI 가 switch_tab 으로 고른 팝업. 그 팝업이 닫히면 계산 단계에서 자동으로 무시된다
   private focusedPopupId: string | null = null
   // 자동화 대상 탭 — 사람이 이 창을 쓰는 중이라 자동화가 보이는 탭을 바꾸지 못했을 때, 자동화가 고른 탭을
@@ -889,9 +891,9 @@ export class TabManager {
         // iframe(카카오 우편번호·결제 키패드) 안에도 페이지 preload(__samba)가 돌게 한다.
         // 이 값이 없으면 Electron 은 최상위 프레임에서만 preload 를 실행한다
         nodeIntegrationInSubFrames: true,
-        // 창이 가려지거나 뒤로 가도 탭이 계속 그려지게 한다 — 키패드 OCR 캡처(capturePage)가
-        // "Current display surface not available for capture" 로 실패하던 원인(실기 2026-09-28)
-        backgroundThrottling: false
+        // 전경은 Chromium의 정상 표시 수명 주기를 따른다. 뒤 탭만 sizeHidden에서 별도로 깨운다.
+        // hidden-but-painting 상태를 전경까지 유지하면 뷰 재부착 뒤 표시 surface가 멈췄다.
+        backgroundThrottling: true
       }
     })
     // WebContentsView 는 네이티브 레이어라 CSS overflow-hidden 으로 잘리지 않는다.
@@ -1146,6 +1148,40 @@ export class TabManager {
     }
   }
 
+  /**
+   * 화면을 가리지 않고 뒤 탭을 캡처한다. backgroundThrottling(false)의 강제 shown 상태에서는
+   * capturePage가 빈 surface를 받았다. 캡처 중에만 정상 표시 상태를 사용하면 Chromium이
+   * capturer count로 hidden-but-painting을 처리한다(실제 Electron 39 격리 시험).
+   */
+  async withCapture<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    const tab = this.get(id)
+    if (!tab || this.win.isDestroyed() || !isTabAlive(tab)) return fn()
+    this.touchLane(id)
+    const view = tab.view
+    const wc = view.webContents
+    this.capturingViews.set(view, (this.capturingViews.get(view) ?? 0) + 1)
+    try {
+      wc.setBackgroundThrottling(true)
+      return await fn()
+    } finally {
+      const depth = (this.capturingViews.get(view) ?? 1) - 1
+      if (depth > 0) this.capturingViews.set(view, depth)
+      else {
+        this.capturingViews.delete(view)
+        // 기다리는 동안 사람이 이 탭을 골랐으면 전경의 정상 표시 상태를 유지한다.
+        if (!this.disposed && !this.win.isDestroyed() && isTabAlive(tab) && id !== this.activeId) {
+          const content = this.win.contentView
+          const index = content.children.indexOf(view)
+          if (index >= 0) {
+            content.removeChildView(view)
+            wc.setBackgroundThrottling(false)
+            content.addChildView(view, index)
+          }
+        }
+      }
+    }
+  }
+
   /** contentView 자식 순서(아래 → 위)를 탭 id 로 바꾼다. 탭이 아닌 뷰(확장 팝업 등)는 null */
   private stackIds(): Array<string | null> {
     if (this.win.isDestroyed()) return []
@@ -1284,7 +1320,7 @@ export class TabManager {
     // 순서가 중요하다 — 반드시 붙이기 **전에** 끈다. 스로틀링이 켜진 채 붙인 뒤 끄면 그 뷰는 다시 그려지지 않고
     // capturePage 도 돌아오지 않는다(격리 실험 2026-10-24: 붙이고 끄기 6/6 멈춤·크기 흔들기·invalidate 로도 안 풀림,
     // 끄고 붙이기 6/6 정상 0.1초). 뗀 상태에서 스로틀링을 바꾸고 붙이면 멈춘 뷰도 바로 살아난다
-    tab.view.webContents.setBackgroundThrottling(false)
+    tab.view.webContents.setBackgroundThrottling((this.capturingViews.get(tab.view) ?? 0) > 0)
     this.win.contentView.addChildView(tab.view, 0)
   }
 
@@ -1594,14 +1630,18 @@ export class TabManager {
       !this.behindIds.includes(prev.id)
     ) {
       this.behindIds.push(prev.id)
-      if (prev.view.webContents.getBackgroundThrottling())
+      if (prev.view.webContents.getBackgroundThrottling() && !this.capturingViews.has(prev.view)) {
+        // 전경에서 뒤 층으로 갈 때도 반드시 뗀 상태에서 바꾼다.
+        this.win.contentView.removeChildView(prev.view)
         prev.view.webContents.setBackgroundThrottling(false)
+        this.win.contentView.addChildView(prev.view, 0)
+      }
     }
     // 뒤 층(레인·자동화)에 있던 탭이 앞으로 나올 때는 그림을 다시 그리게 한다 — 크기가 뒤 층 때와 같아 setBounds 가
     // 아무 일도 안 하고, 한 번도 앞에 나온 적 없는 뷰는 하얀 채로 남는 일이 있었다(실기 2026-10-24: 어떤 탭은 보이고 어떤 탭은 안 보임)
     const wasBehind = this.behindIds.includes(id)
     this.activeId = id
-    // 보이는 탭은 뒤 목록에서 빠지되, 스로틀링은 끈 상태를 유지한다.
+    // 보이는 탭은 뒤 목록에서 빼고 정상 전경 표시 상태로 바꾼다.
     this.pruneBehind()
     const order = stackOrder(id, this.behindIds)
     const wanted = new Set(order)
@@ -1616,10 +1656,12 @@ export class TabManager {
       const t = this.get(tabId)
       if (!t || !isTabAlive(t)) return
       const wc = t.view.webContents
-      // 숨겨 둔 뷰는 스로틀링을 끈 뒤 붙인다. 이미 그리는 뷰의 표시 상태는 다시 바꾸지 않는다.
-      if (wc.getBackgroundThrottling()) {
+      // 전경은 hidden-but-painting 대신 정상 visible 경로로 붙인다. 뒤 탭의 표시 상태를
+      // 그대로 전경에 가져오면 DOM은 살아 있는데 surface는 하얗게 남을 수 있다.
+      const throttling = tabId === id || this.capturingViews.has(t.view)
+      if (wc.getBackgroundThrottling() !== throttling) {
         if (content.children.includes(t.view)) content.removeChildView(t.view)
-        wc.setBackgroundThrottling(false)
+        wc.setBackgroundThrottling(throttling)
       }
       // 뒤 탭끼리의 순서는 표시 결과에 영향을 주지 않는다. 새 뒤 탭만 맨 아래에 붙이고,
       // 선택한 탭 하나만 맨 위로 옮겨 다른 탭의 숨김·표시·프레임 재생성을 피한다.
@@ -1656,6 +1698,7 @@ export class TabManager {
           this.activationEpoch !== epoch ||
           this.gateHidden ||
           this.frontDepth > 0 ||
+          this.capturingViews.has(this.get(id)!.view) ||
           // 전환 뒤 사람이 버튼을 누르거나 입력을 시작했으면 표시 복구가 그 조작을 끊지 않게 한다.
           lastHumanInWindowAt(this.win) !== humanAt
         )

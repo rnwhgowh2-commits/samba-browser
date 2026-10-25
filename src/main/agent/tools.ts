@@ -1216,9 +1216,11 @@ ${raw}`
    * 배치를 돌려준다 — 하나라도 빠지거나 겹치면 null(잘못 누르면 결제 수단이 잠긴다).
    * 배치(숫자 위치)는 로그·결과·모델 어디에도 내보내지 않는다. 자리수 검증 수단이 없어 filled 는 null
    */
-  // 캡처는 탭이 화면에 그려져 있어야 한다 — 뒤 층(가려진) 탭이면 OCR 동안만 맨 위로 올린다
+  // 키패드 배치는 모델에 노출하지 않는다. 뒤 탭도 사람 화면을 가리지 않고 캡처한다.
   const ocrKeypadLayout = (tab: Tab): Promise<KeypadLayout | null> =>
-    ctx.tabs.withFront(tab.id, () => ocrKeypadLayoutInner(tab))
+    (ctx.tabs.withCapture?.bind(ctx.tabs) ?? ctx.tabs.withFront.bind(ctx.tabs))(tab.id, () =>
+      ocrKeypadLayoutInner(tab)
+    )
 
   const ocrKeypadLayoutInner = async (tab: Tab): Promise<KeypadLayout | null> => {
     const cells = await pageBridge.keypadUnlabeled(tab).catch(() => null)
@@ -1534,7 +1536,8 @@ ${handoffToolResult(result)}`
         // 화면이 안 그려지는 탭은 capturePage 가 영영 안 돌아온다(실기 2026-10-24: 도구 제한 90초 초과).
         // 시간 제한을 걸고, 넘으면 보이는 탭을 다시 그려 놓은 뒤 오류로 돌려준다(paint-diag.ts)
         const capturedAt = Date.now()
-        const shot = await ctx.tabs.withFront(tab.id, async () => {
+        const capture = ctx.tabs.withCapture?.bind(ctx.tabs) ?? ctx.tabs.withFront.bind(ctx.tabs)
+        const shot = await capture(tab.id, async () => {
           await new Promise((resolve) => setTimeout(resolve, 100))
           return withCaptureTimeout(tab.view.webContents.capturePage(), SCREENSHOT_TIMEOUT_MS)
         })
@@ -1555,12 +1558,25 @@ ${handoffToolResult(result)}`
         }
         const image = shot
         const { width, height } = image.getSize()
+        // capturePage는 surface가 준비되지 않았을 때 예외 대신 빈 NativeImage도 반환한다.
+        // HTTP 200이나 이미지 객체의 존재만으로 성공을 기록하지 않는다.
+        if (width <= 0 || height <= 0) {
+          paintDiag('capture-empty', { tab: shortId(tab.id), ms: captureMs })
+          ctx.tabs.repaintTab?.(tab.id, 'capture-empty')
+          ctx.onStep('화면 캡처', false)
+          return text('error: screenshot is empty - the display surface is not ready. Try again.')
+        }
         // 긴 변을 1280px 로 맞춰 리사이즈(비율 유지)
         const resized =
           Math.max(width, height) > 1280
             ? image.resize(width >= height ? { width: 1280 } : { height: 1280 })
             : image
-        const base64 = resized.toJPEG(70).toString('base64')
+        const jpeg = resized.toJPEG(70)
+        if (jpeg.length === 0) {
+          ctx.onStep('화면 캡처', false)
+          return text('error: screenshot could not be encoded')
+        }
+        const base64 = jpeg.toString('base64')
         const { width: w, height: h } = resized.getSize()
         ctx.onStep('화면 캡처', true)
         return {

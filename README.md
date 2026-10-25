@@ -2,7 +2,7 @@
 
 사람이 하는 웹 작업(로그인·인증·결제 포함)을 AI 가 대신 끝내주는 Chromium 기반 데스크톱 브라우저
 
-Electron 39 · React 19 · TypeScript · Tailwind CSS · MIT 라이선스 · Windows 11 검증
+Electron 42.9.2 · React 19 · TypeScript · Tailwind CSS · MIT 라이선스 · Windows 11 검증
 
 ---
 
@@ -13,7 +13,7 @@ Electron 39 · React 19 · TypeScript · Tailwind CSS · MIT 라이선스 · Win
 | 무엇 | 확인 / 설치 |
 |---|---|
 | Windows 11 | (macOS·Linux 는 아직 검증하지 않았습니다) |
-| Node.js 20 이상 | `node -v` → 없으면 [nodejs.org](https://nodejs.org) 에서 LTS 설치 |
+| Node.js 22.12 이상 | `node -v` → 없으면 [nodejs.org](https://nodejs.org) 에서 LTS 설치 |
 | pnpm 9 이상 | `corepack enable` 한 번 실행 (Node 에 들어 있습니다) |
 | Git | `git --version` |
 
@@ -96,7 +96,7 @@ Claude Code와 Codex에서 브라우저를 도구로 사용하려면 `powershell
 |---|---|
 | `pnpm` 명령이 없다 | `corepack enable` 후 터미널 다시 열기. 그래도 안 되면 `npm i -g pnpm` |
 | `pnpm install` 중 "Ignored build scripts: onnxruntime-node, electron-winstaller" 경고 | **정상입니다.** 필요한 네이티브 바이너리는 패키지에 들어 있어 무시해도 동작합니다. 그래도 걸리면 `pnpm approve-builds` 로 허용 |
-| `postinstall`(electron-builder install-app-deps) 실패 | Node 20 이상인지 확인(`node -v`). 네트워크가 막힌 회사망이면 Electron·네이티브 바이너리 다운로드가 실패합니다 — 프록시를 풀거나 `ELECTRON_MIRROR` 지정. 그래도 안 되면 `node_modules` 와 `pnpm-lock.yaml` 재설치 대신 `pnpm install --ignore-scripts` 로 넘기고 `pnpm dev` 를 시도해 보세요(OCR 등 일부 기능만 빠집니다) |
+| `postinstall`(electron-builder install-app-deps) 실패 | Node 22.12 이상인지 확인(`node -v`). 네트워크가 막힌 회사망이면 Electron·네이티브 바이너리 다운로드가 실패합니다 — 프록시를 풀거나 `ELECTRON_MIRROR` 지정. 그래도 안 되면 `node_modules` 와 `pnpm-lock.yaml` 재설치 대신 `pnpm install --ignore-scripts` 로 넘기고 `pnpm dev` 를 시도해 보세요(OCR 등 일부 기능만 빠집니다) |
 | `ERR_REQUIRE_CYCLE_MODULE` / `Cannot require() ES Module ... electron-vite.js` | 프로젝트 경로가 너무 길면(윈도우 260자 제한) Node 가 패키지 설정을 못 읽어 생깁니다. `C:\Users\<이름>\samba-browser` 처럼 짧은 경로에 clone 하세요 |
 | `Port 5173 is in use, trying another one...` | 이미 떠 있는 `pnpm dev` 가 있다는 뜻입니다. 그대로 두면 5174 로 올라가니 대개 문제없습니다. 정리하려면 `netstat -ano \| findstr 5173` → `taskkill /PID <pid> /F` |
 | 방화벽 경고 창이 뜸 | Electron/Node 의 로컬 포트 접근을 허용하세요(렌더러 개발 서버 5173, 구글 로그인 콜백 47612~47614) |

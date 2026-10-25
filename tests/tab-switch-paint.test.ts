@@ -80,6 +80,56 @@ function setup(behind = true): {
 afterEach(() => vi.useRealTimers())
 
 describe('탭 전환 뒤 네이티브 화면 복구', () => {
+  it('뒤 탭 캡처 동안만 정상 표시 상태를 쓰고 사용자의 화면과 층을 유지한다', async () => {
+    const { manager, a, b, children } = setup()
+    const order = children.slice()
+    await manager.withCapture('b', async () => {
+      expect(b.view.webContents.getBackgroundThrottling()).toBe(true)
+      expect(children.at(-1)).toBe(a.view)
+    })
+    expect(b.view.webContents.getBackgroundThrottling()).toBe(false)
+    expect(children).toEqual(order)
+    manager.dispose()
+  })
+
+  it('캡처 실패 때도 뒤 탭 상태를 복원한다', async () => {
+    const { manager, b } = setup()
+    await expect(
+      manager.withCapture('b', async () => {
+        throw new Error('capture failed')
+      })
+    ).rejects.toThrow('capture failed')
+    expect(b.view.webContents.getBackgroundThrottling()).toBe(false)
+    manager.dispose()
+  })
+
+  it('캡처 중 사람이 대상 탭을 고르면 뒤 탭 상태로 되돌리지 않는다', async () => {
+    const { manager, b } = setup()
+    await manager.withCapture('b', async () => {
+      manager.activate('b', { by: 'user' })
+    })
+    expect(manager.active()?.id).toBe('b')
+    expect(b.view.webContents.getBackgroundThrottling()).toBe(true)
+    manager.dispose()
+  })
+
+  it('겹친 캡처의 마지막 호출이 끝날 때만 뒤 탭 상태를 복원한다', async () => {
+    const { manager, b } = setup()
+    let finish!: () => void
+    const outer = manager.withCapture(
+      'b',
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve
+        })
+    )
+    await manager.withCapture('b', async () => {})
+    expect(b.view.webContents.getBackgroundThrottling()).toBe(true)
+    finish()
+    await outer
+    expect(b.view.webContents.getBackgroundThrottling()).toBe(false)
+    manager.dispose()
+  })
   it('브릿지의 뒤 탭 캡처가 끝날 때까지 사람의 화면을 가리지 않는다', async () => {
     const { manager, a, children } = setup()
     let finish!: () => void
@@ -219,21 +269,22 @@ describe('탭 전환 뒤 네이티브 화면 복구', () => {
     manager.dispose()
   })
 
-  it('뒤 탭이 여러 개여도 선택한 탭만 앞으로 옮긴다', () => {
+  it('뒤 탭을 전경 표시 상태로 바꿀 때 대상만 다시 붙인다', () => {
     const { manager, a, b, children, win } = setup()
     Object.assign(manager, { laneIds: new Set(['a', 'b']) })
     const remove = vi.spyOn(win.contentView, 'removeChildView')
     const add = vi.spyOn(win.contentView, 'addChildView')
     manager.activate('b', { by: 'user' })
-    expect(remove).not.toHaveBeenCalled()
+    expect(remove.mock.calls).toEqual([[b.view]])
     expect(add.mock.calls).toEqual([[b.view]])
     expect(children).toEqual([a.view, b.view])
-    expect(b.view.webContents.getBackgroundThrottling()).toBe(false)
+    expect(b.view.webContents.getBackgroundThrottling()).toBe(true)
     manager.dispose()
   })
 
   it('같은 탭을 다시 선택해도 네이티브 뷰를 재부착하지 않는다', () => {
     const { manager, win } = setup()
+    manager.active()!.view.webContents.setBackgroundThrottling(true)
     const remove = vi.spyOn(win.contentView, 'removeChildView')
     const add = vi.spyOn(win.contentView, 'addChildView')
     manager.activate('a', { by: 'user' })
@@ -242,11 +293,11 @@ describe('탭 전환 뒤 네이티브 화면 복구', () => {
     manager.dispose()
   })
 
-  it('선택한 탭은 스로틀링을 끄고 가려진 일반 탭만 스로틀링한다', () => {
+  it('선택한 탭과 가려진 일반 탭은 정상 표시 상태를 사용한다', () => {
     const { manager, a, b } = setup(false)
     b.view.webContents.setBackgroundThrottling(true)
     manager.activate('b', { by: 'user' })
-    expect(b.view.webContents.getBackgroundThrottling()).toBe(false)
+    expect(b.view.webContents.getBackgroundThrottling()).toBe(true)
     expect(a.view.webContents.getBackgroundThrottling()).toBe(true)
     manager.dispose()
   })
