@@ -32,7 +32,7 @@ pnpm dev       # 브라우저 창이 뜹니다
 
 ### 첫 실행에서 할 일
 
-Codex에서 브라우저를 도구로 사용하려면 `powershell -ExecutionPolicy Bypass -File .\scripts\setup-mcp.ps1 -StartBrowser`를 한 번 실행하세요. 이 PC 경로로 MCP를 등록하고, 다음 연결부터 자동으로 서버를 실행합니다. 기존 설치는 `-SkipBuild`를 붙일 수 있습니다. [MCP 설치·연결 검사 안내](tools/mcp/README.md).
+Claude Code와 Codex에서 브라우저를 도구로 사용하려면 `powershell -ExecutionPolicy Bypass -File .\scripts\setup-mcp.ps1 -StartBrowser`를 한 번 실행하세요. 두 클라이언트 모두 이 PC 경로로 MCP를 등록하고, 다음 연결부터 각각 서버를 자동 실행합니다. 기존 설치는 `-SkipBuild`를 붙일 수 있습니다. [MCP 설치·연결 검사 안내](tools/mcp/README.md).
 
 1. **AI 연결** — 오른쪽 AI 패널에 "AI 가 아직 연결되지 않았어요" 한 줄이 보이면 그 링크(설정 → AI 연결)로 갑니다. 셋 중 하나를 고르세요.
    - **Claude 구독** — Claude Code 가 설치·로그인돼 있으면 [연결] 한 번으로 끝. 안 돼 있으면 터미널에서 `claude login`

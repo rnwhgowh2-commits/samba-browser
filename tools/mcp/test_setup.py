@@ -3,10 +3,13 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import tomllib
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SPEC = importlib.util.spec_from_file_location("samba_mcp_setup", Path(__file__).with_name("setup.py"))
@@ -15,6 +18,74 @@ SPEC.loader.exec_module(setup)
 
 
 class SetupTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js가 필요합니다")
+    def test_install_both_clients_and_repeat_without_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = [root / "codex/config.toml", root / "claude.json", root / "app.json"]
+            command = [sys.executable, str(setup.HERE / "setup.py"), "--codex-home", str(paths[0].parent),
+                       "--claude-config", str(paths[1]), "--app-config", str(paths[2])]
+            first = subprocess.run(command, capture_output=True, timeout=15)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            originals = [p.read_bytes() for p in paths]
+            second = subprocess.run(command, capture_output=True, timeout=15)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual([p.read_bytes() for p in paths], originals)
+            self.assertEqual(list(root.rglob("*.bak-*")), [])
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js가 필요합니다")
+    def test_invalid_claude_config_leaves_codex_and_app_unmodified(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            claude = root / "claude.json"
+            claude.write_bytes(b'{"bad":')
+            result = subprocess.run([sys.executable, str(setup.HERE / "setup.py"),
+                "--codex-home", str(root / "codex"), "--claude-config", str(claude),
+                "--app-config", str(root / "app.json")], capture_output=True, timeout=15)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(claude.read_bytes(), b'{"bad":')
+            self.assertFalse((root / "codex/config.toml").exists())
+            self.assertFalse((root / "app.json").exists())
+
+    def test_claude_preserves_other_servers_account_and_projects(self):
+        original = {"oauthAccount": {"accountUuid": "test-account"},
+                    "projects": {"C:/work": {"hasTrustDialogAccepted": True}},
+                    "mcpServers": {"rea": {"command": "rea.exe", "args": ["mcp"]},
+                                   "samba-browser": {"command": "old", "env": {"KEEP": "yes"}}}}
+        result = setup.updated_claude_config(json.dumps(original), "node", Path("app.json"))
+        updated = json.loads(result)
+        self.assertEqual(updated["oauthAccount"], original["oauthAccount"])
+        self.assertEqual(updated["projects"], original["projects"])
+        self.assertEqual(updated["mcpServers"]["rea"], original["mcpServers"]["rea"])
+        self.assertEqual(updated["mcpServers"]["samba-browser"]["env"]["KEEP"], "yes")
+        self.assertEqual(setup.updated_claude_config(result, "node", Path("app.json")), result)
+
+    def test_new_claude_registration(self):
+        entry = json.loads(setup.updated_claude_config("", "node", Path("app.json")))["mcpServers"]["samba-browser"]
+        self.assertEqual(entry["type"], "stdio")
+        self.assertEqual(entry["args"], [str(setup.HERE / "server.mjs")])
+        self.assertNotIn("bridgeToken", entry["env"])
+
+    def test_claude_invalid_json_and_http_rejected(self):
+        for source in ('{"bad":', '{"mcpServers":{"samba-browser":{"type":"http","url":"https://example.com"}}}'):
+            with self.assertRaises(ValueError):
+                setup.updated_claude_config(source, "node", Path("app.json"))
+
+    def test_claude_config_directory_override(self):
+        with patch.dict(setup.os.environ, {"CLAUDE_CONFIG_DIR": "C:/claude-personal"}):
+            self.assertEqual(setup.claude_config_path(), Path("C:/claude-personal/.claude.json"))
+
+    def test_check_requires_both_registrations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            codex, claude = Path(directory) / "config.toml", Path(directory) / ".claude.json"
+            app = Path(directory) / "app.json"
+            codex.write_text(setup.updated_config("", "node", app), encoding="utf-8")
+            claude.write_text(setup.updated_claude_config("", "node", app), encoding="utf-8")
+            setup.check_registrations(codex, claude, "node", app)
+            claude.write_text('{"mcpServers":{}}', encoding="utf-8")
+            with self.assertRaises(KeyError):
+                setup.check_registrations(codex, claude, "node", app)
+
     def test_existing_servers_and_tool_policy_preserved(self):
         source = '''model = "example"
 [mcp_servers.rea]

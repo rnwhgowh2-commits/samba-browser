@@ -1,4 +1,4 @@
-"""저장소의 MCP 서버를 Codex에 등록한다. Python 3.11+, 외부 의존성 없음."""
+"""저장소의 MCP 서버를 Claude Code와 Codex에 등록한다. Python 3.11+, 외부 의존성 없음."""
 from __future__ import annotations
 
 import argparse
@@ -58,6 +58,35 @@ def updated_config(text, node, app_config):
     if parsed != expected:
         raise ValueError("기존 설정 보존 검사가 실패했습니다. 파일은 변경하지 않았습니다.")
     return result
+
+
+def claude_config_path():
+    directory = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(directory).expanduser() / ".claude.json" if directory else Path.home() / ".claude.json"
+
+
+def updated_claude_config(text, node, app_config):
+    original = json.loads(text) if text.strip() else {}
+    servers = original.get("mcpServers", {})
+    current = dict(servers.get(NAME, {}))
+    if current.get("type", "stdio") != "stdio" or "url" in current:
+        raise ValueError("기존 Claude Code samba-browser는 stdio 등록이 아닙니다. 자동으로 바꾸지 않습니다.")
+    current.update(type="stdio", command=str(node), args=[str(HERE / "server.mjs")])
+    current["env"] = {**current.get("env", {}), "SAMBA_BROWSER_CONFIG": str(app_config)}
+    updated = {**original, "mcpServers": {**servers, NAME: current}}
+    # 계정·프로젝트·다른 MCP 설정을 보존하고, 이미 같은 설정이면 파일도 다시 쓰지 않는다.
+    return text if updated == original else json.dumps(updated, ensure_ascii=False, indent=2) + "\n"
+
+
+def check_registrations(codex_path, claude_path, node, app_config):
+    codex = tomllib.loads(codex_path.read_text(encoding="utf-8-sig"))["mcp_servers"][NAME]
+    claude = json.loads(claude_path.read_text(encoding="utf-8-sig"))["mcpServers"][NAME]
+    for label, entry in (("Codex", codex), ("Claude Code", claude)):
+        if (entry.get("command") != str(node) or entry.get("args") != [str(HERE / "server.mjs")]
+                or entry.get("env", {}).get("SAMBA_BROWSER_CONFIG") != str(app_config)
+                or entry.get("enabled") is False or "url" in entry
+                or entry.get("type", "stdio") != "stdio"):
+            raise ValueError(f"{label}의 MCP 등록이 현재 설치 경로와 다릅니다. 설치기를 다시 실행하세요.")
 
 
 def write_config(path, content, before):
@@ -145,6 +174,7 @@ def check_connection(node, app_config):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")))
+    parser.add_argument("--claude-config", type=Path, default=claude_config_path())
     default_app = Path(os.environ.get("APPDATA", Path.home() / ".config")) / "SAMBA Browser" / "config.json"
     parser.add_argument("--app-config", type=Path, default=Path(os.environ.get("SAMBA_BROWSER_CONFIG", default_app)))
     parser.add_argument("--check", action="store_true", help="설정을 바꾸지 않고 실행 중 브릿지와 MCP를 검사")
@@ -152,27 +182,36 @@ def main():
     node = shutil.which("node")
     if not node:
         raise ValueError("Node.js 20 이상을 설치하세요.")
-    if args.check:
-        count = check_connection(node, args.app_config.resolve())
-        print(f"연결 정상: 브릿지 인증, MCP 초기화, 도구 {count}개, ping 확인")
-        return
     config_path = args.codex_home.expanduser().resolve() / "config.toml"
+    claude_path = args.claude_config.expanduser().resolve()
+    app_config = args.app_config.expanduser().resolve()
+    if args.check:
+        check_registrations(config_path, claude_path, node, app_config)
+        count = check_connection(node, app_config)
+        print(f"Claude Code·Codex 등록 정상: 브릿지 인증, MCP 초기화, 도구 {count}개, ping 확인")
+        return
     before = config_path.read_bytes() if config_path.exists() else None
     text = before.decode("utf-8-sig") if before is not None else ""
-    updated = updated_config(text, node, args.app_config.resolve())
-    ready = prepare_bridge(args.app_config.resolve())
+    claude_before = claude_path.read_bytes() if claude_path.exists() else None
+    claude_text = claude_before.decode("utf-8-sig") if claude_before is not None else ""
+    # 두 클라이언트의 설정을 모두 검증한 뒤 쓰기를 시작한다.
+    updated = updated_config(text, node, app_config)
+    claude_updated = updated_claude_config(claude_text, node, app_config)
+    ready = prepare_bridge(app_config)
     changed = write_config(config_path, updated, before)
     print("Codex MCP 등록 완료" if changed else "Codex MCP 등록이 이미 최신입니다")
+    claude_changed = write_config(claude_path, claude_updated, claude_before)
+    print("Claude Code MCP 사용자 등록 완료" if claude_changed else "Claude Code MCP 등록이 이미 최신입니다")
     print("기존 MCP·REA·프로젝트 설정 보존 검사를 통과했습니다.")
     if not ready:
         print("기존 브릿지가 꺼져 있습니다. 앱 설정 → 동작 → 하네스 브릿지를 켜세요.")
-    print("삼바브라우저를 실행한 뒤 Codex MCP를 다시 연결하거나 새 채팅을 여세요.")
-    print("실행 중인 앱·Codex·MCP 프로세스는 종료하지 않았습니다.")
+    print("삼바브라우저를 실행한 뒤 Claude Code와 Codex의 MCP를 다시 연결하거나 새 세션을 여세요.")
+    print("실행 중인 앱·Claude Code·Codex·MCP 프로세스는 종료하지 않았습니다.")
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         print(f"설치·검사 실패: {type(error).__name__}. 앱 실행·브릿지 설정·설정 파일 형식을 확인하세요.", file=sys.stderr)
         sys.exit(1)

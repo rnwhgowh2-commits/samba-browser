@@ -1,4 +1,4 @@
-﻿# 저장소를 받은 PC의 경로로 앱 준비와 Codex MCP 등록을 수행한다.
+﻿# 저장소를 받은 PC의 경로로 앱 준비와 Claude Code·Codex MCP 등록을 수행한다.
 [CmdletBinding()]
 param(
     [switch]$SkipBuild,
@@ -33,5 +33,5 @@ if ($StartBrowser) {
         throw '실행 파일이 없습니다. -SkipBuild 없이 다시 설치하세요.'
     }
     Start-Process -FilePath $electron -ArgumentList ('"' + $root + '"') -WorkingDirectory $root -WindowStyle Hidden
-    Write-Host '브라우저 실행을 요청했습니다. Codex MCP를 다시 연결하거나 새 채팅을 여세요.'
+    Write-Host '브라우저 실행을 요청했습니다. Claude Code와 Codex의 MCP를 다시 연결하거나 새 세션을 여세요.'
 }
