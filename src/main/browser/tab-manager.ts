@@ -29,6 +29,7 @@ import { applyMobileEmulation, clearMobileEmulation, MOBILE_WIDTH } from './emul
 import { installWebstoreNavigatorUserAgent, installWebstoreUserAgent } from './webstore-ua'
 import { installSessionCookieKeeper } from './session-cookies'
 import { setCookieClearTarget } from './cookie-clear'
+import { needsOpenerPopup } from './oauth-popup'
 import {
   createProfileLabelReader,
   parseSitesAccountLabels,
@@ -43,6 +44,7 @@ import {
 } from './session-cookie-snapshot'
 import { installDialogHandler, isAutomationActive } from './dialogs'
 import {
+  bridgeOrigin,
   isAutomation,
   isHumanInputEvent,
   lastHumanInWindowAt,
@@ -656,7 +658,7 @@ export class TabManager {
       },
       activate: (wc) => {
         const t = byWc(wc)
-        if (t) this.activate(t.id)
+        if (t) this.activate(t.id, { by: isAutomation() ? undefined : 'extension' })
       },
       profileOf: (ses) => this.profileOfSession(ses)
     }
@@ -764,8 +766,8 @@ export class TabManager {
     return this.get(id)
   }
 
-  /** AI 작업 대상을 고른다. 탭이면 전환, 팝업이면 그 창에 포커스를 준다 */
-  focusTarget(id: string): void {
+  /** AI 작업 대상을 고른다. 탭이면 전환, 팝업이면 그 창에 포커스를 준다. by 는 탭 전환 기록의 출처(사람이 누름 = 'user') */
+  focusTarget(id: string, by?: string): void {
     const popup = this.popupById(id)
     if (popup) {
       this.focusedPopupId = id
@@ -782,7 +784,7 @@ export class TabManager {
       return
     }
     this.focusedPopupId = null
-    this.activate(id)
+    this.activate(id, by ? { by } : undefined)
   }
 
   /** 대상을 닫는다. 팝업이면 창을 닫고, 탭이면 기존 close 와 같다 */
@@ -997,7 +999,8 @@ export class TabManager {
       if (!wc.isDestroyed()) wc.send(IPC.pagePopupOpened)
       // 크롬과 같은 규칙: target=_blank 링크·일반 새 탭 요청은 탭으로 연다.
       // (같은 profile 로 열어 로그인 세션·쿠키가 이어진다)
-      if (disposition === 'foreground-tab' || disposition === 'background-tab') {
+      // 카카오 같은 로그인 팝업은 열어 준 창(window.opener)과 연결이 유지돼야 하므로 탭이 아니라 별도 창으로 연다(oauth-popup.ts)
+      if ((disposition === 'foreground-tab' || disposition === 'background-tab') && !needsOpenerPopup(target)) {
         try {
           // 보이지 않는 탭(자동화가 뒤에서 조작하는 탭)이 연 새 탭은 사람이 보던 탭을 덮지 않게 뒤에서 연다
           const background = openInBackground(tab.id, this.activeId)
@@ -1184,10 +1187,26 @@ export class TabManager {
     return true
   }
 
-  /** 사람이 이 창을 쓰는 중이라 자동화가 보이는 탭·창 포커스를 바꾸면 안 되는가(visible-guard.ts) */
+  /**
+   * 자동화가 보이는 탭·창 포커스를 바꾸면 안 되는가(visible-guard.ts) — 사람이 이 창을 쓰는 중이거나,
+   * 브릿지 요청(외부 세션·하네스·세션 관리자)이면 언제나
+   */
   private holdVisible(): boolean {
     if (this.win.isDestroyed()) return false
-    return shouldHoldVisible(isAutomation(), lastHumanInWindowAt(this.win), Date.now())
+    return shouldHoldVisible(
+      isAutomation(),
+      lastHumanInWindowAt(this.win),
+      Date.now(),
+      undefined,
+      bridgeOrigin() !== undefined
+    )
+  }
+
+  /** 탭 전환 기록에 남길 출처 — 호출부가 준 이름, 없으면 브릿지 출처('bridge'·'bridge:<레인>')·앱 안 AI·앱 자체 */
+  private activationSource(by?: string): string {
+    if (by) return by
+    if (!isAutomation()) return 'app'
+    return bridgeOrigin() ?? 'ai-panel'
   }
 
   /** 탭·팝업의 사람 입력(키 입력·마우스 누름)을 탭과 이 창에 기록한다. 자동화가 보낸 입력은 빼고 센다 */
@@ -1456,6 +1475,11 @@ export class TabManager {
     return id ? this.get(id) : null
   }
 
+  /** 이 탭이 지금 사람에게 보이는 탭인가(브릿지 navigate 가 보던 탭을 바꾸지 않게 한다) */
+  isShownTab(id: string): boolean {
+    return id === this.activeId
+  }
+
   /** 자동화 대상 표식을 지운다 — 사용자가 새 AI 지시를 내리면 다시 보이는 탭부터 조작한다 */
   clearAgentTarget(): void {
     this.automationTabId = null
@@ -1472,12 +1496,14 @@ export class TabManager {
 
   /**
    * opts.repaint — 이미 보이는 탭의 층을 다시 쌓기만 한다(repaintActive·층 점검). 사람이 쓰는 중이어도 막지 않고,
-   * 자동화 대상 표식과 방문 기록은 그대로 둔다
+   * 자동화 대상 표식과 방문 기록은 그대로 둔다.
+   * opts.by — 탭 전환 기록(paint-diag)에 남길 출처('user'·'close'·'extension' 등). 없으면 흐름에서 정한다(activationSource)
    */
-  activate(id: string, opts?: { repaint?: boolean }): void {
+  activate(id: string, opts?: { repaint?: boolean; by?: string }): void {
     const tab = this.get(id)
     if (!tab || this.win.isDestroyed()) return
     const repaint = opts?.repaint === true
+    const by = this.activationSource(opts?.by)
     if (!repaint) {
       // 보거나 자동화 대상으로 고른 레인 탭은 '쓴' 것으로 친다 — 떠난 탭도 방금까지 본 것이라 곧바로 비우지 않는다
       const now = Date.now()
@@ -1493,6 +1519,8 @@ export class TabManager {
       this.automationTabId = id === this.activeId ? null : id
       this.sizeHidden(tab)
       this.pruneBehind()
+      // 누가 화면을 바꾸려 했는지 남긴다 — 보이는 탭은 그대로다
+      if (id !== this.activeId) paintDiag('activate-held', { id: shortId(id), visible: shortId(this.activeId), by })
       return
     }
     // 보이는 탭이 곧 자동화 대상이 된다 — 자동화가 바꿨거나, 사람이 자동화 대상 탭을 직접 눌렀을 때.
@@ -1536,6 +1564,7 @@ export class TabManager {
     this.emit()
     paintDiag(repaint ? 'activate-repaint' : 'activate', {
       id: shortId(id),
+      by,
       wasBehind,
       ...this.stackInfo()
     })
@@ -1665,7 +1694,7 @@ export class TabManager {
     if (isTabAlive(tab)) tab.view.webContents.close()
     if (this.activeId === id) {
       const next = this.tabs[idx] ?? this.tabs[idx - 1]
-      if (next) this.activate(next.id)
+      if (next) this.activate(next.id, { by: `close:${this.activationSource()}` })
       else this.activeId = null
     }
     this.emit()
