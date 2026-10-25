@@ -44,6 +44,19 @@ export function isAutomation(): boolean {
   return automationScope.getStore() === true
 }
 
+// 브릿지(외부 세션·하네스·세션 관리자) 호출의 출처 — 'bridge' 또는 'bridge:<레인>'. 앱 안 AI 패널 호출에는 없다
+const bridgeScope = new AsyncLocalStorage<string>()
+
+/** 브릿지 요청 하나를 그 출처 이름으로 돌린다(탭 전환 기록·보이는 탭 지키기가 쓴다) */
+export function runFromBridge<T>(origin: string, fn: () => Promise<T>): Promise<T> {
+  return bridgeScope.run(origin, fn)
+}
+
+/** 지금 흐름이 브릿지 요청이면 그 출처 이름, 아니면 undefined */
+export function bridgeOrigin(): string | undefined {
+  return bridgeScope.getStore()
+}
+
 /**
  * 사람의 입력을 기록한다(키 입력·사용자가 누른 키마스터 자동완성·마우스 누름).
  * kind 'pointer'(마우스 누름)는 '사람이 쓰는 탭' 판정에만 들어가고 '사람이 친 값' 기록에는 넣지 않는다

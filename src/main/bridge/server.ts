@@ -11,6 +11,7 @@ import type { ToolSession } from '../agent/runner'
 import type { ParsedLogin } from '../import/passwords-csv'
 import type { ImportPasswordsResult } from '../../shared/import'
 import { clearSiteCookies } from '../browser/cookie-clear'
+import { runFromBridge } from '../browser/human-activity'
 
 export interface BridgeDeps {
   /** lane 이 있으면 그 레인 세션(다른 레인과 동시에 열린다) */
@@ -246,7 +247,8 @@ export class BridgeServer {
     hold()
     const timeoutMs = this.deps.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS
     let timer: NodeJS.Timeout | undefined
-    const callPromise = session.call(name, args)
+    // 브릿지 요청은 사람이 보던 탭을 바꾸지 않는다(visible-guard.ts) — 탭 전환 기록에는 출처(레인)를 남긴다
+    const callPromise = runFromBridge(lane ? `bridge:${lane}` : 'bridge', () => session.call(name, args))
     // 제한 시간 뒤에도 callPromise 는 계속 돌 수 있다 — 늦게 끝나도 세션 정리와 busy 해제는 한 번만
     let settledByTimer = false
     try {

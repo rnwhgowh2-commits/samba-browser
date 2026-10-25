@@ -62,7 +62,7 @@ import {
   popupTargetsOf
 } from './target'
 import type { AgentTarget } from '../browser/targets'
-import { automationBlocked, runAsAutomation } from '../browser/human-activity'
+import { automationBlocked, bridgeOrigin, runAsAutomation } from '../browser/human-activity'
 import type { AgentToolCall, SiteActionTool } from '../../shared/site-memory'
 import type { HandoffKind } from '../../shared/ipc'
 import { PLAYBOOK_INSTRUCTIONS_MAX, type PlaybookDto } from '../../shared/playbook'
@@ -1537,6 +1537,23 @@ ${handoffToolResult(result)}`
     }
   )
 
+  /** 브릿지 호출이 사람이 보고 있는 탭을 다른 주소로 옮기려 하는가(navigate·login 이 그 탭을 두고 뒤 탭을 쓴다) */
+  const bridgeWouldMoveShownTab = (tab: Tab): boolean =>
+    bridgeOrigin() !== undefined && ctx.tabs.isShownTab?.(tab.id) === true
+
+  /**
+   * 같은 프로필의 새 탭을 뒤에서 열어 url 로 옮긴다(보이는 탭은 그대로). 브릿지 흐름이라 새 탭은 화면에 나오지 않고
+   * 자동화 대상이 되어 이후 호출도 그 탭을 조작한다. 열지 못하면 null
+   */
+  const openBehindForBridge = async (tab: Tab, url: string): Promise<Tab | null> => {
+    const info = ctx.tabs.create({ url: 'about:blank', profile: tab.profile, mobile: tab.mobile })
+    const opened = ctx.tabs.get(info.id)
+    if (!opened) return null
+    await ctx.tabs.navigate(opened.id, url)
+    await pageBridge.waitForLoad(opened)
+    return opened
+  }
+
   const navigate = tool(
     'navigate',
     'Open a URL or search query in the active tab.',
@@ -1551,6 +1568,16 @@ ${handoffToolResult(result)}`
         // 주소를 갈아 끼우면 결제 세션이 끊기므로, 탭으로 돌아가라고 알려 준다
         if (targetList().find((t) => t.id === tab.id)?.kind === 'popup') {
           return 'refused: cannot navigate inside a popup; switch_tab to the opener tab first'
+        }
+        // 브릿지(외부 세션·하네스)가 사람이 보고 있는 탭을 이동시키면 보던 화면이 다른 사이트로 바뀐다(실기 2026-10-24~25).
+        // 그 탭은 두고 같은 프로필의 새 탭을 뒤에서 열어 이동한다 — 새 탭이 자동화 대상이 되어 이후 호출도 그 탭을 조작한다
+        if (bridgeWouldMoveShownTab(tab)) {
+          const opened = await openBehindForBridge(tab, url)
+          if (!opened) return 'error: could not open a background tab'
+          return (
+            `ok: ${opened.view.webContents.getURL()} (opened in new background tab ${opened.id} — ` +
+            'the tab the user is viewing was left unchanged)'
+          )
         }
         await ctx.tabs.navigate(tab.id, url)
         await pageBridge.waitForLoad(tab)
@@ -2135,14 +2162,20 @@ overlays left: ${after.length}${kept}`
         () => label,
         async () => {
           if (ctx.mode === 'read_only') return READ_ONLY_REFUSAL
-          const tab = activeOr(ctx)
-          if (!tab) return 'no active tab'
-          const host = currentHost(tab)
+          const shown = activeOr(ctx)
+          if (!shown) return 'no active tab'
           // 평문(http) 로그인 페이지에는 비밀번호를 채우지 않는다
-          const blocked = gateRefusal(currentUrl(tab))
+          const blocked = gateRefusal(currentUrl(shown))
           if (blocked) return blocked
           const available = vaultAvailable()
           if (typeof available === 'string') return available
+          // 로그인은 로그인 주소로 옮기거나 로그인 링크를 눌러 페이지를 바꾼다 — 브릿지 호출이 사람이 보던 탭을 바꾸지 않게
+          // 같은 주소의 새 탭을 뒤에서 열어 거기서 로그인한다(같은 프로필이라 로그인 쿠키는 보던 탭과 같이 쓴다)
+          const tab = bridgeWouldMoveShownTab(shown)
+            ? await openBehindForBridge(shown, currentUrl(shown))
+            : shown
+          if (!tab) return 'error: could not open a background tab'
+          const host = currentHost(tab)
           label = `로그인: ${host}`
           // 이미 로그인돼 있으면 다시 로그인하지 않는다 — 재로그인은 세션을 새로 만들어
           // 캡차·추가 인증을 불러오기 때문이다. 폼이 없을 때만 상태 힌트를 본다

@@ -9,20 +9,26 @@
 //  - 그때 자동화가 고른 탭은 '자동화 대상 탭'(내부 표식)으로만 기억한다 — AI 도구는 그 탭을 조작하고
 //    화면은 사람이 보던 탭 그대로다.
 //  - 사람이 입력하지 않은 지 HUMAN_BUSY_MS 가 지났거나, 자동화가 아닌 흐름(사용자가 탭을 누름)이면 예전처럼 전환한다.
+//  - 브릿지 요청(외부 AI 세션·하네스·세션 관리자)은 사람이 입력했는지와 상관없이 언제나 보이는 탭을 지킨다.
+//    실기 2026-10-24~25: 사람이 60초 입력 없이 보기만 하면 레인 없는 new_tab 이 보던 탭을 다른 소싱처로 바꿨다.
+//    화면을 보며 지시하는 앱 안 AI 패널만 예전 규칙을 쓴다.
 
 import { HUMAN_BUSY_MS } from './human-activity'
 
 /**
  * 보이는 탭 전환·창 포커스를 막아야 하는가.
  * automation: 지금 자동화 흐름 안인가 / lastHumanAt: 이 창에 사람이 마지막으로 입력한 시각(없으면 undefined)
+ * fromBridge: 브릿지 요청인가(그러면 자동화이면 언제나 막는다)
  */
 export function shouldHoldVisible(
   automation: boolean,
   lastHumanAt: number | undefined,
   now: number,
-  busyMs = HUMAN_BUSY_MS
+  busyMs = HUMAN_BUSY_MS,
+  fromBridge = false
 ): boolean {
   if (!automation) return false
+  if (fromBridge) return true
   if (lastHumanAt === undefined) return false
   return now - lastHumanAt < busyMs
 }

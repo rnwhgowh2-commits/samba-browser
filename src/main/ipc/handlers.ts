@@ -393,7 +393,7 @@ export function registerIpc(
   )
   // 팝업 id 로도 닫기·전환이 되게 대상(탭+팝업) 경로로 보낸다
   handleFromRenderer(IPC.tabClose, (id: string) => tabs.closeTarget(id))
-  handleFromRenderer(IPC.tabActivate, (id: string) => tabs.focusTarget(id))
+  handleFromRenderer(IPC.tabActivate, (id: string) => tabs.focusTarget(id, 'user'))
   handleFromRenderer(IPC.tabNavigate, (id: string, url: string) => tabs.navigate(id, url))
   handleFromRenderer(IPC.tabBack, (id: string) => tabs.back(id))
   handleFromRenderer(IPC.tabForward, (id: string) => tabs.forward(id))
