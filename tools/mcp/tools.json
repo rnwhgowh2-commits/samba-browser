@@ -1,0 +1,841 @@
+[
+  {
+    "name": "get_page",
+    "description": "For single actions; prefer run_js for sequences. Read the current page: URL, title, numbered interactive elements, visible text. At most 150 elements are listed; pass query to list only the ones matching that text. Pass selector (a CSS selector) to list only what is inside it - element ids stay the same. Pass diff=true to get only the lines that changed since your last get_page on this tab.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "selector": {
+          "type": "string"
+        },
+        "diff": {
+          "type": "boolean"
+        }
+      }
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "find_elements",
+    "description": "Search interactive elements by visible text/name/href when read_page's list is truncated; returns matching element ids to use with click/type",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "screenshot",
+    "description": "Screenshot the active tab as an image. Do NOT use it when the text snapshot already answers the question - only when get_page text is not enough (image captcha, chart, layout). Password fields show as dots, never the real value.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "full": {
+          "type": "boolean"
+        }
+      }
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "navigate",
+    "description": "Open a URL or search query in the active tab.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "click",
+    "description": "For single actions; prefer run_js for sequences. Click element [n] from get_page.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "label": {
+          "type": "string",
+          "description": "element text, for logging"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "type",
+    "description": "Type text into input [n]. submit=true presses Enter.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "text": {
+          "type": "string"
+        },
+        "submit": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "select",
+    "description": "Choose an option in <select> [n] by value or visible text.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "value"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "scroll",
+    "description": "Scroll the page up or down. Pass id (an element id from get_page/find_elements) to scroll the scrollable list that contains that element instead - use it when a dropdown or panel shows only its first items (e.g. sizes up to 250 but you need 255): scroll with the id of a visible item, then call find_elements again.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "direction": {
+          "type": "string",
+          "enum": [
+            "up",
+            "down"
+          ]
+        },
+        "id": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "direction"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "dismiss_overlay",
+    "description": "Close the notice, coupon, event or app-install layer that covers the page (up to 3 of them). Use it when a click answers \"clicked but nothing changed\" or get_page starts with an OVERLAY line. Payment, password, sign-in and verification dialogs are never touched - answer those yourself or ask the user.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "run_js",
+    "description": "Run a short async script that drives the page through several steps in ONE turn. The code runs in a sandbox in the browser process, not in the page - only these APIs exist: page.get({query,selector,interactive}) -> {tree,diff,total,elements}, page.click(id), page.type(id,text,submit), page.select(id,value), page.scroll(dir,id), page.text(id), page.find(query), page.idOf(text,nth) -> id or -1, page.clickText(text,nth), page.dismissOverlay(), page.url(), page.title(), page.waitFor(textOrRegex, ms) -> true/false (use instead of fixed sleep), tabs.list()/switch(id)/close(id)/open({url, profile}), affiliate.adpick(productUrl, profile) -> JSON string {ok,trackinglink,percent}, sleep(ms), log(...). Use log() and return a value; both come back to you. fill_secret, login and the phone tools are NOT available here - call those tools directly.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "JavaScript, 8000 characters or fewer"
+        },
+        "safety": {
+          "description": "no_pay: refuse clicks on payment-confirm buttons; probe: report support",
+          "type": "string",
+          "enum": [
+            "no_pay",
+            "probe"
+          ]
+        }
+      },
+      "required": [
+        "code"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "wait",
+    "description": "Wait up to 5000 ms for the page to settle.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ms": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 5000
+        }
+      },
+      "required": [
+        "ms"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "new_tab",
+    "description": "Open a new tab (optionally with profile name and mobile mode) and make it active.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "mobile": {
+          "type": "boolean"
+        }
+      }
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "list_tabs",
+    "description": "List open tabs AND popup windows. kind \"popup\" is a separate window a tab opened (address search, payment); openerId says which tab opened it. Call switch_tab with its id to work inside a popup.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "switch_tab",
+    "description": "Activate a tab, or step into a popup window, by id (see list_tabs). When you are done inside a popup, call switch_tab again with the opener tab id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "close_tab",
+    "description": "Close a tab or a popup window by id (see list_tabs).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "list_accounts",
+    "description": "List saved accounts for a host (usernames are masked). Use it to pick an account label for fill_secret/login.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string"
+        }
+      }
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "fill_secret",
+    "description": "Fill a saved secret (password, card number, ...) into input [n] without ever revealing its value. Use field for a specific field such as \"card.number\". For itemType \"password\" (a payment password) pass provider to say which checkout it is: site when the site pays with its own money such as 무신사머니 or SSG머니, musinsapay for 무신사페이 when the user saved a separate password for it (otherwise follow the playbook - many users share one password with site), toss for 토스페이, kakao for 카카오페이, naver for 네이버페이, payco for 페이코. When a pay popup (pay.toss.im, PAYCO ...) asks for the phone number or birth date, those are saved on that payment item: itemType \"password\", the provider, field \"payment.phone\" or \"payment.birth\" (format \"digits\" / \"yymmdd\"). The user’s own contact number for other forms (e.g. a shipping address) is itemType \"identity\", field \"identity.phone\" - it may be saved once as a global item.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "file": "tools.ts",
+    "generic": true
+  },
+  {
+    "name": "login",
+    "description": "Sign in to the current site with a saved account. Never ask the user for a password.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "accountLabel": {
+          "type": "string"
+        }
+      }
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "progress",
+    "description": "Report how far along a multi-item task is, so the user can watch. Call it when you start and after each item.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "done": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "items finished so far"
+        },
+        "total": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "items in total"
+        },
+        "label": {
+          "description": "what is being worked on right now",
+          "type": "string"
+        }
+      },
+      "required": [
+        "done",
+        "total"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "remember_site",
+    "description": "Remember one short lesson about this site for next time (e.g. \"the 구매하기 button only opens with focus+Enter\", \"the address popup is a separate window\"). Call it at most a couple of times per task, and never store personal data, addresses or secrets.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "site host, e.g. musinsa.com"
+        },
+        "note": {
+          "type": "string",
+          "description": "one short sentence, no personal data"
+        }
+      },
+      "required": [
+        "host",
+        "note"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "save_script",
+    "description": "Save a run_js snippet that just WORKED so later runs can replay it with one run_script call (no code tokens, fewer tool calls). Save steps you will need again for other orders/items: searching a list, reading a row, filling a record form, reading totals. Take everything that changes between runs from the global `args` object (args.orderNo, args.cost …) — never hardcode order numbers, amounts or element ids that change; find elements by text inside the code. Return a small JSON result the caller can verify. Saving under an existing name replaces it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "snake_case, e.g. samba_find_order"
+        },
+        "host": {
+          "description": "main site host, e.g. samba-wave.vercel.app",
+          "type": "string"
+        },
+        "description": {
+          "type": "string",
+          "description": "what it does and what it returns, one or two sentences"
+        },
+        "params": {
+          "description": "args it reads, e.g. [\"orderNo — 상품주문번호\", \"cost — 실구매가 숫자\"]",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "code": {
+          "type": "string",
+          "maxLength": 8000,
+          "description": "the run_js body; reads inputs from args"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "code"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "run_script",
+    "description": "Run a saved script by name with args (see \"Saved scripts\" in the system prompt). Same sandbox and page/tabs API as run_js, up to 75s. Check the returned result against the page before relying on it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "args": {
+          "description": "JSON object string with the values the script reads, e.g. {\"orderNo\":\"…\"}",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "list_playbooks",
+    "description": "List the saved playbooks (name, triggers, size). Pass an id to read that playbook’s full instructions — do that before replacing them.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "playbook id from a previous list_playbooks call",
+          "type": "string"
+        }
+      }
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "update_playbook",
+    "description": "Change a saved playbook’s instructions. Use append to add a step you just learned, or instructions to replace the whole text (read it with list_playbooks first). The user has to approve the change on a card before it is saved. Name and triggers cannot be changed here.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "playbook id from list_playbooks"
+        },
+        "append": {
+          "description": "text to add at the end, e.g. one new step",
+          "type": "string"
+        },
+        "instructions": {
+          "description": "full replacement text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "done",
+    "description": "Finish the task with a short summary for the user.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary"
+      ]
+    },
+    "file": "tools.ts"
+  },
+  {
+    "name": "phone_get_screen",
+    "description": "Read the connected phone screen: current app package, screen size and numbered elements. Use those numbers with phone_tap. Password and PIN screens are refused.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "file": "tools-phone.ts"
+  },
+  {
+    "name": "phone_tap",
+    "description": "Tap the phone screen: pass elementId from phone_get_screen, or raw device coordinates x and y.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "elementId": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "label": {
+          "description": "element text, for logging",
+          "type": "string"
+        }
+      }
+    },
+    "file": "tools-phone.ts"
+  },
+  {
+    "name": "phone_type",
+    "description": "Type plain text into the focused phone field. Only letters, digits, space and _ . @ % + - = : , / are accepted; anything else is refused, so tap the on-screen keyboard instead. Never use this for a payment password, PIN or any secret - the app fills those itself.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    "file": "tools-phone.ts"
+  },
+  {
+    "name": "phone_swipe",
+    "description": "Swipe on the phone between two device coordinates. Use it to scroll a list or open a drawer.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "x",
+            "y"
+          ]
+        },
+        "to": {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "x",
+            "y"
+          ]
+        },
+        "ms": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "file": "tools-phone.ts"
+  },
+  {
+    "name": "phone_screenshot",
+    "description": "Screenshot the phone as an image. Use when phone_get_screen text is not enough (image captcha, keypad layout). Secret keypad screens are refused.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "file": "tools-phone.ts"
+  },
+  {
+    "name": "wait_for_sms_code",
+    "description": "Wait for the SMS verification code to arrive on the phone and fill it into the page field. Returns only a masked result - you never see the code itself.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "description": "site host that is asking for the code",
+          "type": "string"
+        }
+      }
+    },
+    "file": "tools-phone.ts"
+  },
+  {
+    "name": "ocr",
+    "description": "Read text from the active tab locally (PP-OCRv5). Returns text lines with view-coordinate boxes. Use for captcha text, receipts, SMS codes, keypad digits - anything rendered as an image. Optional region {x,y,width,height} limits the area.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "region": {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            },
+            "width": {
+              "type": "number"
+            },
+            "height": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "network_record",
+    "description": "Record the network requests (XHR/fetch/document and more) of the active tab, like the browser devtools Network panel. action \"start\" begins recording (optionally url_filter: only URLs containing this text); then use the page normally (open it, click, change options, go to page 2) and read the result with network_list / network_get. \"stop\" ends it (entries stay readable), \"clear\" empties the list, \"status\" shows counts. Requests made before \"start\" are NOT recorded - start first, then reload or act. Cookie/authorization/token values are masked and login/payment request bodies are omitted.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "start",
+            "stop",
+            "clear",
+            "status"
+          ]
+        },
+        "url_filter": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    },
+    "file": "tools-network.ts"
+  },
+  {
+    "name": "network_list",
+    "description": "List the requests recorded by network_record on the active tab: \"#index METHOD status type mime ms url\". Default shows xhr/fetch/document/other only; pass types=\"all\" or e.g. \"xhr,fetch,script\" to change. filter = text the URL must contain; method = GET/POST...; min_status = e.g. 400 for errors; limit (max 200) / offset page through. Then read one request in full with network_get.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "type": "string"
+        },
+        "types": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "min_status": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "offset": {
+          "type": "number"
+        }
+      }
+    },
+    "file": "tools-network.ts"
+  },
+  {
+    "name": "network_get",
+    "description": "Show one recorded request in full: request headers (cookie/authorization masked) and body, response status/headers/body, and where in the page code it was called from (initiator). index = the #number from network_list. part = \"request\" | \"response\" | \"all\" (default); max_chars limits the output (default 6000).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "number"
+        },
+        "part": {
+          "type": "string",
+          "enum": [
+            "all",
+            "request",
+            "response"
+          ]
+        },
+        "max_chars": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "index"
+      ]
+    },
+    "file": "tools-network.ts"
+  },
+  {
+    "name": "page_eval",
+    "description": "Run JavaScript inside the active page (like the devtools console) and return the result as JSON text. The code is the BODY of an async function: use `return` to give a value, and `await` freely, e.g. `const r = await fetch(\"/api/goods/1\"); return await r.json();` - fetch uses the page own login session. Also good for reading the DOM: `return document.title`. Results are masked for secret-looking keys, truncated to 8000 chars, and 20s max. Reading cookies, web storage, password fields or Authorization headers is refused. Not allowed in read-only mode. Do NOT send POST/PUT/DELETE requests unless the user asked for that change.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code"
+      ]
+    },
+    "file": "tools-page.ts"
+  },
+  {
+    "name": "console_read",
+    "description": "Read the console of the active tab: console.log/warn/error calls, uncaught exceptions and browser log lines (e.g. \"Failed to load resource: 404\"). action \"start\" begins recording (only messages after start are kept - then reload or act), \"read\" (default) lists them, \"clear\" empties, \"stop\" ends. level = error | warn | info | log | all; filter = text; limit/offset page through. Secret-looking values are masked.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "start",
+            "stop",
+            "clear",
+            "read"
+          ]
+        },
+        "level": {
+          "type": "string"
+        },
+        "filter": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "offset": {
+          "type": "number"
+        }
+      }
+    },
+    "file": "tools-page.ts"
+  },
+  {
+    "name": "network_guard",
+    "description": "Safety guard for observing what a button WOULD send: while \"on\", requests that change data (anything except GET/HEAD/OPTIONS, e.g. POST from a \"create group\" button) are NOT sent to the server - the page just gets a fake 200 {\"intercepted\":true}. Their URL and body stay readable with network_list / network_get (marked INTERCEPTED). Network recording is started automatically. allow = comma-separated URL texts that may still pass through (e.g. read-only POST searches). \"off\" restores normal behavior, \"status\" shows the count. Only the main page is guarded (iframes are not). The guard turns itself off after 10 minutes. It does not stop page navigations by GET or form posts you did not intercept - check status before clicking anything that changes data.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "on",
+            "off",
+            "status"
+          ]
+        },
+        "allow": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    },
+    "file": "tools-page.ts"
+  },
+  {
+    "name": "phone_key",
+    "description": "Press a phone hardware key (e.g. back, home, enter).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ]
+    }
+  },
+  {
+    "name": "register_site_account",
+    "description": "현재 사이트를 키마스터에 등록하거나 사용자가 지정한 기존 계정의 로그인에 연결한다. sourceHost와 정확한 sourceAccountLabel을 함께 주면 연결한다. loginMethod=naver는 현재 프로필의 네이버 세션으로 간편로그인하며 비밀번호를 공유하지 않는다. shared_password는 명시적으로 같은 비밀번호를 쓰는 경우에만 사용한다. 그 외에는 username으로 세션용 계정을 등록한다. 현재 로그인 탭·쿠키를 바꾸지 않는다. 사이트 회원가입이나 구매·취소 접수를 실행하는 기능이 아니며, 비밀번호는 받거나 반환하지 않는다.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "siteName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 254
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "sourceHost": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 254
+        },
+        "sourceAccountLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 254
+        },
+        "loginMethod": {
+          "type": "string",
+          "enum": [
+            "shared_password",
+            "naver"
+          ]
+        }
+      },
+      "required": [
+        "siteName"
+      ],
+      "additionalProperties": false
+    }
+  }
+]

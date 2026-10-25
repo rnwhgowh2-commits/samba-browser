@@ -6,6 +6,10 @@ dist/
 .superpowers/
 .claude/
 *.tsbuildinfo
+__pycache__/
+*.py[cod]
+.env.*
+!.env.example
 # 로컬 OCR 모델은 첫 사용 시 내려받는다(커밋 금지)
 models/
 *.onnx
