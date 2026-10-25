@@ -2,10 +2,12 @@
 
 이 문서는 현재 PC 개발본을 GitHub `samba-local` 브랜치에 보관하는 기준으로 작성했다. 화면 구성과 소스 코드를 대조했으며, 기능이 구현된 범위와 별도 연결이 필요한 조건을 함께 적었다. 기본 `master`에는 다른 개발 이력이 있으므로 이 게시에서 덮어쓰거나 강제 병합하지 않는다.
 
+업로드 저장소는 [rnwhgowh2-commits/samba-browser](https://github.com/rnwhgowh2-commits/samba-browser/tree/samba-local)다. 원본 [sbk0674-web/samba-browser](https://github.com/sbk0674-web/samba-browser)의 쓰기 권한이 현재 GitHub 계정에 없어, 현재 계정에 포크를 만들고 개발본을 올린다. 원본 이력·라이선스는 유지한다.
+
 ## 현재 개발본 받기
 
 ```powershell
-git clone --branch samba-local https://github.com/sbk0674-web/samba-browser.git
+git clone --branch samba-local https://github.com/rnwhgowh2-commits/samba-browser.git
 cd samba-browser
 powershell -ExecutionPolicy Bypass -File .\scripts\setup-mcp.ps1 -StartBrowser
 ```
