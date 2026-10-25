@@ -14,6 +14,23 @@ agents:
     prompts: samba/payer
     dataset: ds.payer
     retry: 0
+  # 무신사 자동결제 — 삼바가 판정·입력한다(옵션 autopay=1 인 작업만). 일반 기록·검증보다 앞에 둔다
+  - name: autopay_recorder
+    kind: recorder
+    match: {autopay: '1'}
+    tools: [run_js, progress]
+    rules: rules/recorder.md
+    prompts: samba/recorder
+    dataset: ds.recorder
+    retry: 0
+  - name: autopay_verifier
+    kind: verifier
+    match: {autopay: '1'}
+    tools: [progress]
+    rules: rules/verifier.md
+    prompts: samba/verifier
+    dataset: ds.verifier
+    retry: 0
   - name: recorder
     kind: recorder
     match: {}

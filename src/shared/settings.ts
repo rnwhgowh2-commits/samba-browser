@@ -21,8 +21,9 @@ import { RECOMMEND_MAX, type DismissedRecommendation } from './activity-patterns
 
 // 도구 호출 상한 허용 범위
 export const MIN_TOOL_CALLS = 1
-// 계정 두 개로 주문서를 각각 만들어 원가를 비교하면 한 건에 200회를 넘긴다
-export const MAX_TOOL_CALLS = 400
+// 사실상 무제한. 계정 두 개로 주문서를 각각 만들어 원가를 비교하면 한 건에 200회를 넘기고,
+// "도구 호출 한도에 도달했다"며 일이 중간에 멈추는 것을 막으려고 2026-10-24 에 400 → 100000 으로 올렸다
+export const MAX_TOOL_CALLS = 100000
 
 // 오른쪽 패널 폭 허용 범위
 // 패널 폭 한계(렌더러 uiStore 와 공유)
@@ -83,8 +84,9 @@ export const DEFAULT_SETTINGS = {
   lastUrl: NEW_TAB_URL,
   dangerWords: DEFAULT_DANGER_WORDS,
   // 한 작업에서 허용하는 도구 호출 수. 주문 흐름(로그인→검색→옵션→장바구니→주문서→쿠폰→
-  // 결제수단 비교)은 120회로도 계정 비교 도중에 끊겼다(실기). 200회로 잡는다(상한은 MAX_TOOL_CALLS)
-  maxToolCalls: 200,
+  // 결제수단 비교)은 120회로도 계정 비교 도중에 끊겼다(실기). 한도에 걸려 멈추지 않도록 기본을
+  // 상한(MAX_TOOL_CALLS)과 같게 둔다(2026-10-24)
+  maxToolCalls: MAX_TOOL_CALLS,
   permissionMode: 'guard' as const,
   finalConfirm: false,
   // Aside 방식: 자동 잠금 기본 1주(10080분), 이 PC 에서 기억 기본 켬
@@ -469,12 +471,22 @@ export function clampToolCalls(n: number): number {
  * 저장 파일(원본 JSON)에 1회 마이그레이션을 건다(순수 함수). 바꿀 게 없으면 null.
  * - 2026-09-27: 로그인 자격증명 '묻지 않고 자동 저장'을 기본 켬으로 바꿨다. 예전 기본값(꺼짐)이 저장된 파일도
  *   한 번만 켬으로 옮긴다. 옮긴 뒤 사용자가 다시 끄면 그 값을 존중한다(플래그가 남아 다시 바꾸지 않는다)
+ * - 2026-10-24: 도구 호출 상한을 사실상 무제한으로 올렸다. 예전 저장 파일에 남은 낮은 값(200 등)은
+ *   새 기본값으로 올린다. 저장값이 이미 기본값 이상이면 건드리지 않는다
  */
 export function migrateSettingsFile(raw: unknown): Record<string, unknown> | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
-  const obj = raw as Record<string, unknown>
-  if (obj.vaultAutoSaveLoginsMigrated === true) return null
-  return { ...obj, vaultAutoSaveLogins: true, vaultAutoSaveLoginsMigrated: true }
+  let obj = raw as Record<string, unknown>
+  let changed = false
+  if (obj.vaultAutoSaveLoginsMigrated !== true) {
+    obj = { ...obj, vaultAutoSaveLogins: true, vaultAutoSaveLoginsMigrated: true }
+    changed = true
+  }
+  if (typeof obj.maxToolCalls === 'number' && obj.maxToolCalls < DEFAULT_SETTINGS.maxToolCalls) {
+    obj = { ...obj, maxToolCalls: DEFAULT_SETTINGS.maxToolCalls }
+    changed = true
+  }
+  return changed ? obj : null
 }
 
 export function parseSettings(input: unknown): Settings {

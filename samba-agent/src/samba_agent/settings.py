@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     intake_poison_only: bool = Field(default=False, alias='SAMBA_INTAKE_POISON_ONLY')
     # 포이즌 제한을 두지 않는(모든 판매처를 이행하는) 소싱처(쉼표). 예: MUSINSA
     intake_all_sellers_sources: str = Field(default='', alias='SAMBA_INTAKE_ALL_SELLERS_SOURCES')
+    # 무신사 자동결제 — 삼바의 '자동결제' 태그 주문을 삼바 최저가 비교·삼바 판정으로 처리한다(꺼 두면 안 돈다).
+    # 켜면 일반 수집(intake)은 무신사 '자동결제' 주문을 건드리지 않는다. 결제는 SAMBA_DRY_RUN=false 일 때만 실제로 한다.
+    autopay_enabled: bool = Field(default=False, alias='SAMBA_AUTOPAY_ENABLED')
+    autopay_interval_s: int = Field(default=120, ge=10, alias='SAMBA_AUTOPAY_INTERVAL_S')
+    autopay_max_new: int = Field(default=3, ge=1, alias='SAMBA_AUTOPAY_MAX_NEW')
     # 결제에 쓸 수 있는 결제 제공자(쉼표, 비우면 키마스터에 있는 것 전부). 예: site,musinsapay
     allowed_pay_providers: str = Field(default='', alias='SAMBA_ALLOWED_PAY_PROVIDERS')
     # True 면 결제 승인 요청을 사람 대신 즉시 승인한다(사용자가 자동 이행을 켠 경우만)

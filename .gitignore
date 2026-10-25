@@ -10,6 +10,10 @@ __pycache__/
 *.py[cod]
 .env.*
 !.env.example
+# 개발 검증 산출물과 개인 탭 기록은 소스 업로드에서 제외한다.
+build/account-link-validation/
+build/tab-stress-*/
+build/github-validation/
 # 로컬 OCR 모델은 첫 사용 시 내려받는다(커밋 금지)
 models/
 *.onnx

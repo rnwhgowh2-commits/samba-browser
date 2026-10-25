@@ -22,6 +22,16 @@ dismiss_overlay, run_js, wait, new_tab, list_tabs, switch_tab, close_tab, list_a
 fill_secret, login, progress, remember_site, save_script, run_script, list_playbooks, update_playbook,
 phone_*(폰 연결 시), phone_approve_payment(결제 배선 시). `done` 은 없다.
 
+### 사이트 계정 등록·기존 로그인 연결
+
+`register_site_account`는 현재 탭의 사이트를 실제 키마스터 계정으로 등록한다. `siteName`과 `username`이면 비밀번호 없는 세션용 계정을 만든다. `sourceHost`와 정확한 `sourceAccountLabel`, `loginMethod: "naver"`를 함께 주면 네이버 간편로그인으로 연결한다. `login`은 같은 프로필의 기존 네이버 세션과 공식몰의 네이버 버튼을 사용하며 공식몰 비밀번호 칸에 네이버 비밀번호를 넣지 않는다. 외부 사이트 회원가입·구매·클레임 접수는 별도 요청에 따른다.
+
+연결은 원본 도메인·아이디와 로그인 방식으로 저장한다. 원본의 결제 비밀번호·카드·세션 쿠키는 복제하지 않는다. 네이버 연결에서 `fill_secret`은 로그인 비밀번호를 반환하거나 채우지 않는다. 제외 사이트·접근 금지·다른 작업공간·삭제된 원본·기존 직접 로그인 덮어쓰기는 거부한다. 같은 원본의 연결 방식은 변경할 수 있다. `shared_password`(생략 시 기본값)는 사용자가 같은 비밀번호 사용을 명시한 경우에만 사용한다.
+
+예: 르무통 탭에서 `{ "siteName": "르무통 공식몰", "sourceHost": "naver.com", "sourceAccountLabel": "<사용자가 지정한 저장 계정 라벨>", "loginMethod": "naver" }`. 응답에는 연결 결과와 계정 메타만 담긴다. 비밀번호 인자는 없다.
+
+외부 MCP 어댑터의 도구 목록은 `node tools/install-account-tool.mjs`로 갱신한다. 메인 프로세스 변경을 적용하려면 실행 중 작업이 없는 시점에 앱을 정상 종료하고 다시 시작한다.
+
 ## 하네스 .env
 
 ```

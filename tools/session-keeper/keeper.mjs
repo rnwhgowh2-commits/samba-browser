@@ -22,6 +22,7 @@ import { call as bridgeCall, health, postJson, sleep, BridgeDown, BridgeBusy, Br
 const DEFAULT_CALL_MS = 60_000
 const call = (tool, args = {}, opts = {}) => bridgeCall(tool, args, { timeoutMs: DEFAULT_CALL_MS, ...opts })
 import { syncFromSamba } from './samba-sync.mjs'
+import { loginWithKakao, continueNikeLogin, verifiedMemberPage } from './site-login.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DATA_DIR = join(process.env.APPDATA ?? HERE, 'SAMBA Browser', 'session-keeper')
@@ -113,6 +114,18 @@ const nameMatches = (name, marker) =>
   marker.startsWith('~') ? name.includes(marker.slice(1)) : name === marker
 const hasMarker = (els, markers = []) => els.some((e) => markers.some((m) => nameMatches(e.name, m)))
 
+// 화면 읽기 도구가 결과 대신 돌려준 오류 글(페이지 응답 없음·탭 다시 여는 중 등). 화면을 못 읽은 것이지 '표시 없음'이 아니다
+// (실측 2026-10-25: PC 부하 중 새 무신사 탭은 find_elements 가 20초씩 'error: page did not respond' 를 돌려줬다)
+const READ_ERROR = /^(error:|no active tab)/i
+class PageReadError extends Error {}
+/** 화면 읽기 도구를 부른다. 오류 글이 오면 PageReadError 를 던진다(브릿지 예외는 그대로 올린다) */
+async function readPage(tool, args, opts) {
+  const out = await call(tool, args, opts)
+  if (READ_ERROR.test(out.trim())) throw new PageReadError(out.trim().slice(0, 80))
+  return out
+}
+const readFailSeen = (e) => `페이지 조회 실패: ${String(e.message ?? e).replace(/^error:\s*/i, '').slice(0, 50)}`
+
 // --- 레인 탭 ---------------------------------------------------------------
 const laneOf = (site) => `keeper-${site.laneKey ?? site.id}`
 const tabIdOf = (r) => r.match(/[0-9a-f]{8}-[0-9a-f-]{27}/)?.[0]
@@ -166,14 +179,20 @@ async function probeByUrl(site, { keepTab = false } = {}) {
         let txt = ''
         let readOk = true
         try {
-          txt = await call('get_page', { query: site.probe.inText ?? '로그' }, { lane, retries: 1, timeoutMs: PROBE_CALL_MS })
+          txt = await readPage('get_page', site.probe.requiredText ? {} : { query: site.probe.inText ?? '로그' }, { lane, retries: 1, timeoutMs: PROBE_CALL_MS })
         } catch (e) {
           readOk = false
-          seen = `페이지 조회 실패: ${String(e.message ?? e).slice(0, 40)}`
+          seen = readFailSeen(e)
         }
         // 화면을 읽지 못했으면 '변함없음'의 증거가 아니다 — 연속 확인 횟수를 지우고 다시 본다
         if (!readOk) {
           stableIn = 0
+          await sleep(3000)
+          continue
+        }
+        if (site.probe.requiredText && !verifiedMemberPage(txt, site.probe.requiredText)) {
+          stableIn = 0
+          seen = '회원 화면의 표시를 확인하지 못함'
           await sleep(3000)
           continue
         }
@@ -217,23 +236,38 @@ async function probeSignedIn(site, { keepTab = false } = {}) {
     await sleep(3000)
     while (now() < deadline) {
       let els = []
+      let readOk = true
       try {
         // 로그인/로그아웃 요소를 모두 모으려고 흔한 두 글자씩 따로 묻는다(find_elements 는 부분일치)
         const queries = [...new Set([...(site.markers.in ?? []), ...(site.markers.out ?? [])].map((m) => m.replace(/^~/, '')))]
-        for (const q of queries) els.push(...parseElements(await call('find_elements', { query: q }, { lane })))
+        for (const q of queries) els.push(...parseElements(await readPage('find_elements', { query: q }, { lane })))
       } catch (e) {
-        seen = String(e.message).slice(0, 80)
+        readOk = false
+        seen = e instanceof PageReadError ? readFailSeen(e) : String(e.message).slice(0, 80)
       }
       if (hasMarker(els, site.markers.in)) {
         verdict = 'in'
         break
       }
+      // 화면을 다 읽지 못한 회차는 판정하지 않고 다시 본다 — 일부만 읽고 out 으로 결론 내면 복구가 잘못 돈다
+      if (!readOk) {
+        await sleep(2500)
+        continue
+      }
+      seen = ''
       if (hasMarker(els, site.markers.out)) {
         // 로그인 표시만 보이면 한 번 더 확인한다(로딩 중 일시 표시 방지)
         await sleep(2500)
         const again = []
-        for (const q of new Set((site.markers.in ?? []).map((m) => m.replace(/^~/, ''))))
-          again.push(...parseElements(await call('find_elements', { query: q }, { lane })))
+        try {
+          for (const q of new Set((site.markers.in ?? []).map((m) => m.replace(/^~/, ''))))
+            again.push(...parseElements(await readPage('find_elements', { query: q }, { lane })))
+        } catch (e) {
+          if (!(e instanceof PageReadError)) throw e
+          // 다시 확인하는 화면을 못 읽었으면 out 으로 정하지 않는다
+          seen = readFailSeen(e)
+          continue
+        }
         verdict = hasMarker(again, site.markers.in) ? 'in' : 'out'
         break
       }
@@ -439,6 +473,11 @@ async function reloginVault(site) {
     return { ok: false, reason: `login 도구 오류: ${String(e.message).slice(0, 100)}` }
   }
   log(`[${site.id}] login 도구 응답: ${res.replace(/\s+/g, ' ').slice(0, 140)}`)
+  if (site.relogin.followup === 'nike' && /^fields not found/i.test(res)) {
+    const result = await continueNikeLogin(site, { call, sleep }, lane)
+    if (!result.needsUser) await closeLaneTabs(lane)
+    return result
+  }
   const low = res.toLowerCase()
   // 'submitted: check the page for success or captcha/2FA' 는 정상 응답 문구다 — 글자만 보고 캡차로 오판하지 않는다.
   // 제출 응답이 아닌 경우에만 막힘 문구를 찾고, 제출 뒤 실제 결과는 아래 대기와 호출부의 재확인이 가린다
@@ -482,6 +521,13 @@ async function reloginVault(site) {
 
 async function relogin(site) {
   switch (site.relogin?.type) {
+    case 'kakao_click': {
+      const lane = laneOf(site)
+      await closeLaneTabs(lane)
+      const result = await loginWithKakao(site, { call, sleep }, lane)
+      if (!result.needsUser) await closeLaneTabs(lane)
+      return result
+    }
     case 'vault_login':
       return reloginVault(site)
     case 'naver_direct':

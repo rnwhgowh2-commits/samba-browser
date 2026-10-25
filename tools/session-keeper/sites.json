@@ -101,6 +101,7 @@
       "id": "MUSINSA",
       "label": "무신사",
       "home": "https://www.musinsa.com/main/musinsa/recommend?gf=A",
+      "checkTimeoutSec": 75,
       "markers": {
         "in": [
           "로그아웃"
@@ -411,10 +412,16 @@
       "checkTimeoutSec": 45,
       "probe": {
         "url": "https://www.okcashbag.com/my/point",
-        "loginRe": "okcashbag\\.com/login"
+        "loginRe": "okcashbag\\.com/login",
+        "outText": "OK캐쉬백 시작하기",
+        "requiredText": "사용 가능 포인트|사용가능 포인트|보유 포인트|보유포인트|적립내역|포인트 내역"
       },
-      "_relogin_보류": "설정탭 로그인 방식 = 카카오(자동 로그인 전략 없음) — 사람이 로그인",
-      "relogin": null,
+      "relogin": {
+        "type": "kakao_click",
+        "loginUrl": "https://www.okcashbag.com/login",
+        "accountEmail": "rnwhgowh2@gmail.com"
+      },
+      "_복구메모": "2026-10-25 카카오로 계속하기 → 기존 간편로그인 계정 선택. 카카오 세션 만료·약관·인증은 사람 확인",
       "budget": {
         "perDay": 2,
         "minGapMin": 180,
@@ -457,11 +464,15 @@
       "checkTimeoutSec": 45,
       "probe": {
         "url": "https://www.nike.com/kr/member/profile",
-        "loginRe": "accounts\\.nike\\.com/"
+        "loginRe": "accounts\\.nike\\.com/|nike\\.com/kr/login",
+        "outText": "가입 또는 로그인을 위해|법률 약관이 업데이트|로그인하고 멤버",
+        "requiredText": "나이키\\s*멤버\\s*가입:"
       },
       "relogin": {
         "type": "vault_login",
-        "loginUrl": "https://www.nike.com/kr/login"
+        "loginUrl": "https://www.nike.com/kr/login",
+        "accountLabel": "rnwhgowh2@gmail.com",
+        "followup": "nike"
       },
       "_메모": "2026-10-24 추가. 삼바 설정탭 계정 rnwhgowh2@gmail.com(id_pw). 로그인 화면은 accounts.nike.com 이메일→비밀번호 2단계. 키마스터에 계정이 들어가야(삼바계정_키마스터로_동기화.cmd) 복구가 된다",
       "budget": {

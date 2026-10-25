@@ -56,7 +56,7 @@ describe('브릿지 레인', () => {
     const { base, lanes } = await up(150)
     const [a, b] = await Promise.all([call(base, 'buyer01'), call(base, 'buyer02')])
     expect([a.status, b.status]).toEqual([200, 200])
-    expect(lanes.sort()).toEqual(['buyer02', 'buyer01'])
+    expect(lanes.sort()).toEqual(['buyer01', 'buyer02'])
   })
 
   it('같은 레인이 겹치면 409, 레인 중에는 레인 없는 요청도 409', async () => {

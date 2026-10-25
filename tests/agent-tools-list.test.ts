@@ -44,6 +44,7 @@ describe('tools/list', () => {
       'click',
       'run_js',
       'fill_secret',
+      'register_site_account',
       'save_script',
       'run_script',
       'remember_site',

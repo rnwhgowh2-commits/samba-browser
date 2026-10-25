@@ -14,6 +14,7 @@ from collections.abc import Callable
 from urllib.parse import urlparse
 
 from samba_agent import local_aliases
+from samba_agent.agents import autopay as _autopay
 from samba_agent.agents.base import (
     PAGE_DIALOGS_KEY,
     AgentBase,
@@ -337,7 +338,7 @@ def cheapest_quotes(
 
 
 # 포이즌 외 마켓의 까대기 건 배송비(삼바웨이브 기록, 원). 사무실 경유 재발송비 — poizon-sourcing 스킬 규칙
-KKADAEGI_SHIPPING_FEE = 2300
+KKADAEGI_SHIPPING_FEE = 2600  # 사용자 2026-10-06: 2,300 → 2,600 (삼바 musinsa_autopay_service.KKADAEGI_SHIPPING_FEE 와 같다)
 # 사무실 주소 표식 — 까대기의 기본 배송지가 이 주소여야 한다(경북 가상시 사무실길 58)
 OFFICE_ADDRESS_HINT = local_aliases.apply('사무실길 58')
 # 사무실 수령인 — 주소가 사무실이어도 이름이 다르면 사무실 배송지로 보지 않는다(사용자 2026-09-24)
@@ -537,7 +538,7 @@ def decide_order_type(
 
 
 def shipping_fee_for(order: OrderRef, order_type: str) -> float:
-    """삼바웨이브에 기록할 배송비 — 포이즌 외 마켓의 까대기 건만 2,300원, 나머지(포이즌·직배)는 0."""
+    """삼바웨이브에 기록할 배송비 — 포이즌 외 마켓의 까대기 건만 2,600원, 나머지(포이즌·직배)는 0."""
     if order_type == 'kkadaegi' and not is_poison_seller(order.seller):
         return float(KKADAEGI_SHIPPING_FEE)
     return 0.0
@@ -1249,6 +1250,70 @@ class BuyerAgent(AgentBase):
             return False
         return isinstance(out, dict) and out.get('signed_in') is True
 
+    def _autopay_account(self, a: Assignment, source: Source) -> str:
+        """자동결제 — 삼바의 계정별 최저가 비교가 정한 계정(아이디)을 키마스터 라벨로 바꾼다. 하네스는 계정을 비교하지 않는다."""
+        username = str(a.options.get(_autopay.OPT_USERNAME) or '').strip()
+        if not username:
+            raise AgentFailure('needs_human', '자동결제 지시서에 계정 아이디가 없다', FailReason.UNKNOWN)
+        home = self._home()
+        host = source.login_host or urlparse(home).hostname or ''
+        self.step(f'{self.spec.name}: 자동결제 계정 확인')
+        self.tool('new_tab', url=home)
+        self.tool('wait', ms=_LOGIN_SETTLE_MS)
+        labels, locked = parse_account_labels(self.tool('list_accounts', host=host))
+        if locked or not labels:
+            raise AgentFailure(
+                'needs_human', f'소싱처 계정 없음/금고 잠김: {source.id}', FailReason.PERMISSION_DENIED
+            )
+        label = _autopay.label_for(username, labels)
+        if label is None:
+            raise AgentFailure(
+                'needs_human',
+                f'키마스터에서 삼바가 정한 계정 {username} 의 라벨을 하나로 정하지 못했다',
+                FailReason.UNKNOWN,
+            )
+        self.note('계정 선택', f'{label} — 삼바 최저가 비교 결과(자동결제)')
+        return label
+
+    def _autopay_verify(
+        self, a: Assignment, snap: dict[str, object], option: str, card: object, product_no: str
+    ) -> dict[str, object]:
+        """자동결제 — 주문서에서 읽은 값을 삼바에 보내 결제 가능 여부를 받는다. 개인정보는 보내지 않는다.
+
+        배송지는 `_set_shipping` 이 입력 후 되읽어 이미 대조했다(어긋나면 여기까지 오지 못한다) — 그 사실만 보낸다.
+        """
+        if self._wave is None:
+            raise AgentFailure('needs_human', '삼바 연결이 없어 자동결제 조건을 판정하지 못했다', FailReason.UNKNOWN)
+        if quote_provider(str(card or '')) != 'site':
+            raise AgentFailure(
+                'needs_human', f'자동결제는 {_autopay.MONEY_METHOD} 만 허용한다(수단: {card})', FailReason.CARD_MISSING
+            )
+        total = _as_float(snap.get('prep_total'))
+        used = _as_float(snap.get('points_used'))
+        if total <= 0:
+            raise AgentFailure('needs_human', '주문서 결제액을 읽지 못해 자동결제를 판정하지 못했다', FailReason.UNKNOWN)
+        observed = {
+            'username': str(a.options.get(_autopay.OPT_USERNAME) or ''),
+            'product_id': product_no,
+            'quantity': a.order.qty,
+            'option': option,
+            'product_coupon': {'discount': int(_as_float(snap.get('prep_coupon')))},
+            'cart_coupon': {'discount': int(_as_float(snap.get('prep_cart_coupon')))},
+            'payment_method': 'MUSINSAPAY_MONEY',
+            'pay_amount_before_points': int(total + used),
+            'shipping_verified': True,
+        }
+        try:
+            verdict = self._wave.autopay_verify(a.order.order_no, observed)  # type: ignore[attr-defined]
+        except WaveError as e:
+            raise AgentFailure('needs_human', f'삼바 결제 전 판정 실패: {mask_text(str(e)[:100])}', e.reason) from e
+        if verdict.get('pay') is not True:
+            reasons = '; '.join(str(r) for r in (verdict.get('reasons') or []))[:300]
+            self.note('삼바 판정', mask_text(f'결제 불가 — {reasons}'))
+            raise AgentFailure('needs_human', f'자동결제 조건 불일치(삼바 판정): {reasons}', FailReason.VERIFY_MISMATCH)
+        self.note('삼바 판정', f'결제 가능 — 예상 매입가 {verdict.get("net_cost")}원')
+        return {'autopay_verified': True, 'autopay_net_cost': verdict.get('net_cost')}
+
     def _candidate_accounts(self, a: Assignment) -> list[str]:
         """구매 후보 계정. 주문이 계정을 지정하면 그 계정 하나(비교하지 않는다).
 
@@ -1257,6 +1322,8 @@ class BuyerAgent(AgentBase):
         최대 compare_accounts_max 개만 쓴다.
         """
         source = source_of(self.spec.name)
+        if _autopay.is_autopay(a.options):
+            return [self._autopay_account(a, source)]
         if source.buy_accounts:
             # 비교 계정을 정해 둔 소싱처 — SAMBA 주문계정은 기록용일 뿐 구매 계정이 아니다(§5).
             # 순서(= 동률일 때 이기는 쪽)는 키마스터의 결제 우선순위가 먼저, 없으면 sources.yaml 순서
@@ -1972,6 +2039,10 @@ class BuyerAgent(AgentBase):
         snap['points_used'] = used
         # 계정 비교 검증(_audit_quotes)이 보는 값
         snap['coupon_applied'] = _as_float(out.get('coupon')) + _as_float(out.get('cart_coupon'))
+        # 자동결제 결제 전 판정(삼바)이 쓰는 값 — 상품쿠폰·장바구니쿠폰 금액과 정돈 뒤 총 결제액
+        snap['prep_coupon'] = _as_float(out.get('coupon'))
+        snap['prep_cart_coupon'] = _as_float(out.get('cart_coupon'))
+        snap['prep_total'] = _as_float(out.get('total'))
         snap['points_balance'] = out.get('points_balance')
         snap['coupons_issued'] = list(getattr(self, '_issued', {}).get(account, []))
         total = _as_float(out.get('total'))
@@ -2915,6 +2986,7 @@ class BuyerAgent(AgentBase):
         self._check_account(account, snap)
         if (
             source_of(self.spec.name).payment_quotes
+            and not _autopay.is_autopay(a.options)
             and not snap.get('_quoted')
             and _as_float(snap.get('cost')) > 0
             and not snap.get('already_ordered')
@@ -3063,10 +3135,13 @@ class BuyerAgent(AgentBase):
         cost = _as_float(snap.get('cost'))
         # 실제 결제액(적립·배송비 보정 전) — 스냅샷이 주면 기록 메모에 싣는다. 0 이면 모름
         paid = float(snap.get('pay_amount') or 0)
-        # 마진은 삼바에 기록할 배송비(포이즌 외 까대기 2,300원)까지 넣고 본다 — 빼고 보면 −0.5% 적자 건이
+        # 마진은 삼바에 기록할 배송비(포이즌 외 까대기 2,600원)까지 넣고 본다 — 빼고 보면 −0.5% 적자 건이
         # +1.3~1.6% 로 보여 결제됐다(실기 2026-09-26 174·181)
         fee = shipping_fee_for(a.order, self.order_type_of(a.order, snap))
         margin = self._margin(a.order, cost + fee, float(snap.get('margin_pct') or 0))
+        autopay_result: dict[str, object] = {}
+        if _autopay.is_autopay(a.options):
+            autopay_result = self._autopay_verify(a, snap, picked.choice, card, str(snap.get('product_no') or '') or product_no_of(a.order.product_url) or '')
         self.step(f'{self.spec.name}: 결제 직전까지 준비 완료')
         # 실제로 산 상품 번호 — 스냅샷 값 우선, 없으면 이 사이트 상품 주소(교차 비교면 order2 의 이 사이트 주소)
         pno = str(snap.get('product_no') or '') or product_no_of(a.order.product_url)
@@ -3086,6 +3161,7 @@ class BuyerAgent(AgentBase):
                 'order_type': self.order_type_of(a.order, snap),
                 'shipping_fee': shipping_fee_for(a.order, self.order_type_of(a.order, snap)),
                 'card': card,
+                **autopay_result,
                 **({'card_issuer': card_issuer} if card_issuer else {}),
                 'cost': cost,
                 'margin_pct': margin,
@@ -3141,6 +3217,12 @@ class BuyerAgent(AgentBase):
             f'판매가 {sale:,.0f} - 원가 {cost:,.0f} → {margin}% (정산금 미확인 근사)',
         )
         return margin
+
+    # 삼바웨이브 클라이언트 — 자동결제 결제 전 판정에만 쓴다(없으면 자동결제는 사람에게 넘어간다)
+    _wave: 'object | None' = None
+
+    def set_wave(self, wave: 'object | None') -> None:
+        self._wave = wave
 
     def set_shipping_provider(self, provider: ShippingFn | None) -> None:
         """배송지 공급자(삼바웨이브 상세)를 꽂는다. 배선은 factory 가 한다.

@@ -92,6 +92,16 @@ import {
   type WorkspaceScope
 } from '../../shared/sync'
 import { normalizeHost, accountGroupKey } from '../../shared/host'
+import { checkVaultGate, effectiveAccess } from './access-gate'
+import {
+  LOGIN_SOURCE_HOST,
+  LOGIN_SOURCE_USERNAME,
+  LOGIN_METHOD,
+  loginMethodOf,
+  loginSourceOf,
+  siteAccountSchema,
+  type SiteAccountInput
+} from './login-link'
 
 // electron safeStorage 중 실제로 쓰는 부분만 좁혀 둔 인터페이스(테스트에서 스텁 주입)
 export interface SafeStorageLike {
@@ -153,6 +163,7 @@ interface PendingPasswordUndo {
   // 갱신 전 값. 기존 항목이 없어 새로 만든 경우는 null(되돌리기 시 항목을 삭제한다)
   oldValue: string | null
   hadExistingItem: boolean
+  oldLoginLink?: StoredSection[]
   expiresAt: number
 }
 
@@ -1022,6 +1033,128 @@ export class VaultService {
     }
   }
 
+  /** 비밀번호를 복제하지 않고 현재 사이트 계정을 등록하거나 저장 계정의 로그인에 연결한다. */
+  registerSiteAccount(raw: SiteAccountInput): AccountDto {
+    this.requireKey()
+    const input = siteAccountSchema.parse(raw)
+    const url = new URL(input.url)
+    if (url.username || url.password) throw new Error('invalid-site-url')
+    const host = normalizeHost(url.href)
+    const settings = this.settings.get()
+    const excludedHosts = settings.vaultExcludedHosts
+    if (checkVaultGate({ url: url.href, excludedHosts, policy: settings.vaultAccessPolicy })) {
+      throw new Error('site-account-access-denied')
+    }
+    let source: AccountDto | undefined
+    if (input.sourceHost) {
+      const matches = this.listAccounts(input.sourceHost).filter(
+        (a) => a.label === input.sourceAccountLabel
+      )
+      if (matches.length !== 1) throw new Error('source-account-missing-or-ambiguous')
+      source = matches[0]
+      const item = this.repo.findItemRow(source.id, 'login')
+      const password = item && findField(item.sections, DEFAULT_FIELD_KEY)
+      if (input.loginMethod === 'naver' && accountGroupKey(source.host) !== 'naver.com') {
+        throw new Error('naver-source-required')
+      }
+      if (
+        input.loginMethod !== 'naver' &&
+        (!item || loginSourceOf(item.sections) || !password || !isSecretField(password))
+      ) {
+        throw new Error('source-needs-own-login-password')
+      }
+      if (
+        checkVaultGate({
+          url: `https://${source.host}/`,
+          excludedHosts,
+          policy: effectiveAccess(source.agentAccess, settings.vaultAccessPolicy)
+        })
+      ) {
+        throw new Error('source-account-access-denied')
+      }
+    }
+    const username = input.username ?? source!.username
+    const matches = this.listAccounts(host).filter((a) => a.username === username)
+    if (matches.length > 1) throw new Error('target-account-ambiguous')
+    const existing = matches[0]
+    if (
+      existing &&
+      checkVaultGate({
+        url: url.href,
+        excludedHosts,
+        policy: effectiveAccess(existing.agentAccess, settings.vaultAccessPolicy)
+      })
+    ) {
+      throw new Error('target-account-access-denied')
+    }
+    if (
+      source &&
+      (source.id === existing?.id || accountGroupKey(source.host) === accountGroupKey(host))
+    ) {
+      throw new Error('source-and-target-must-differ')
+    }
+    const ownLogin = existing ? this.repo.findItemRow(existing.id, 'login') : null
+    if (source && ownLogin) {
+      const linked = loginSourceOf(ownLogin.sections)
+      if (!linked || linked.host !== source.host || linked.username !== source.username) {
+        throw new Error('target-login-already-exists')
+      }
+    }
+    const cleanUrl = `${url.origin}${url.pathname}`
+    const accountId = this.repo.transaction(() => {
+      const account = this.upsertAccount({
+        ...(existing ? { id: existing.id } : {}),
+        host,
+        username,
+        label: input.label ?? existing?.label ?? `${input.siteName} (${source?.label ?? username})`,
+        siteName: input.siteName,
+        urls: [...new Set([...(existing?.urls ?? []), cleanUrl])]
+      })
+      if (source) {
+        const now = Date.now()
+        const id =
+          ownLogin?.id ?? this.repo.insertItemPlaceholder(account.id, 'login', '연결된 로그인', now)
+        this.repo.updateItemFields(
+          id,
+          [
+            {
+              key: 'login-link',
+              label: '기존 계정 로그인 연결',
+              fields: [
+                {
+                  key: LOGIN_METHOD,
+                  label: '로그인 방식',
+                  kind: 'text',
+                  value: input.loginMethod ?? 'shared_password'
+                },
+                { key: LOGIN_SOURCE_HOST, label: '원본 사이트', kind: 'text', value: source.host },
+                {
+                  key: LOGIN_SOURCE_USERNAME,
+                  label: '원본 아이디',
+                  kind: 'text',
+                  value: source.username
+                }
+              ]
+            }
+          ],
+          '연결된 로그인',
+          'login',
+          now
+        )
+        this.record('vault_items', id, 'upsert')
+        this.repo.insertAudit({
+          itemId: id,
+          accountId: account.id,
+          action: 'link-login',
+          source: 'user'
+        })
+      }
+      return account.id
+    })
+    this.touch()
+    return this.getAccount(accountId)!
+  }
+
   // 기존 항목이 있으면 덮어쓰고, 없으면 새로 만든다.
   // - input.id 를 주면 그 항목을 갱신한다(편집)
   // - 계정 항목은 (accountId, type) 이 키다(계정당 로그인 항목 1개)
@@ -1451,8 +1584,14 @@ export class VaultService {
     const row =
       this.repo.findItemRow(accountId, type) ??
       (type === 'card' ? this.firstVerifiedLinkedCard(accountId) : null)
+    if (type === 'login' && row && loginMethodOf(row.sections) === 'naver') return null
     const own = row ? this.decryptForFill(row, fieldKey, jobId, source) : null
     if (own !== null) return own
+    if (type === 'login' && fieldKey === DEFAULT_FIELD_KEY && row) {
+      const originalLogin = this.linkedLoginRow(accountId, row.sections)
+      if (!originalLogin) return null
+      return this.decryptForFill(originalLogin, fieldKey, jobId, source)
+    }
     if (type === 'card') return null
     // 신원정보는 "나"의 것이라 계정마다 같다 — 계정에 없으면 전역 신원정보에서 찾는다.
     // (직배 배송지의 CS 연락처를 구매 계정마다 다시 적지 않게. 카드·로그인은 계정에 묶인 값이라 넘겨 쓰지 않는다)
@@ -1464,10 +1603,62 @@ export class VaultService {
     return null
   }
 
+  /** 로그인 자동채움과 수동 로그인 감지가 같은 연결·권한 검증을 사용한다. */
+  private linkedLoginRow(accountId: number, sections: StoredSection[]): VaultItemRow | null {
+    if (loginMethodOf(sections) === 'naver') return null
+    const linked = loginSourceOf(sections)
+    if (!linked) return null
+    // 현재 작업공간의 살아 있는 계정만 조회한다. 연결의 연결·삭제 계정·접근 거부는 사용하지 않는다.
+    const target = this.listAccounts().find((a) => a.id === accountId)
+    const candidates = this.listAccounts(linked.host).filter((a) => a.username === linked.username)
+    if (!target || candidates.length !== 1) return null
+    const original = candidates[0]
+    const settings = this.settings.get()
+    if (
+      [target, original].some((a) =>
+        checkVaultGate({
+          url: `https://${a.host}/`,
+          excludedHosts: settings.vaultExcludedHosts,
+          policy: effectiveAccess(a.agentAccess, settings.vaultAccessPolicy)
+        })
+      )
+    )
+      return null
+    const row = this.repo.findItemRow(original.id, 'login')
+    return row && !loginSourceOf(row.sections) ? row : null
+  }
+
+  /** 소셜 로그인은 연결 메타만 읽으며 원본 비밀번호를 복호화하지 않는다. */
+  loginMethod(accountId: number): 'naver' | 'shared_password' {
+    const row = this.repo.findItemRow(accountId, 'login')
+    return row ? loginMethodOf(row.sections) : 'shared_password'
+  }
+
+  naverLoginSource(accountId: number): AccountDto | null {
+    if (!this.key || this.loginMethod(accountId) !== 'naver') return null
+    const row = this.repo.findItemRow(accountId, 'login')
+    const linked = row && loginSourceOf(row.sections)
+    if (!linked || accountGroupKey(linked.host) !== 'naver.com') return null
+    const target = this.listAccounts().find((a) => a.id === accountId)
+    const candidates = this.listAccounts(linked.host).filter((a) => a.username === linked.username)
+    if (!target || candidates.length !== 1) return null
+    const settings = this.settings.get()
+    if (
+      [target, candidates[0]].some((a) =>
+        checkVaultGate({
+          url: `https://${a.host}/`,
+          excludedHosts: settings.vaultExcludedHosts,
+          policy: effectiveAccess(a.agentAccess, settings.vaultAccessPolicy)
+        })
+      )
+    )
+      return null
+    return candidates[0]
+  }
+
   /**
-   * 계정의 결제 비밀번호 항목을 찾는다. 앱 계정 자신(naver.com 계정)에 저장된 항목은 결제 수단이 "이 사이트"(site)로
-   * 돼 있어도 그 앱의 결제 비밀번호다(실기 13차: 네이버 계정의 항목이 site 라 네이버페이 조회가 not-found) —
-   * 결제 수단으로 못 찾으면 그 계정이 그 결제 수단의 앱 계정일 때만 site 항목으로 다시 찾는다
+   * 앱 계정 자신의 site 비밀번호는 그 결제 앱의 비밀번호로도 찾는다.
+   * 예: naver.com에 site로 저장한 네이버페이 비밀번호.
    */
   private findPaymentRowFor(
     accountId: number,
@@ -1631,7 +1822,9 @@ export class VaultService {
     const normalized = normalizeHost(host) || host
     const account = this.matchAccountRows(normalized).find((a) => a.username === username)
     if (!account) return false
-    const row = this.repo.findItemRow(account.id, 'login')
+    const own = this.repo.findItemRow(account.id, 'login')
+    const row =
+      own && loginSourceOf(own.sections) ? this.linkedLoginRow(account.id, own.sections) : own
     if (!row) return false
     const field = findField(row.sections, DEFAULT_FIELD_KEY)
     if (!field || !isSecretField(field)) return false
@@ -1768,7 +1961,20 @@ export class VaultService {
       accountId: input.accountId,
       type: 'login',
       label,
-      value: input.value,
+      ...(existing && loginSourceOf(existing.sections)
+        ? {
+            // 사이트만 별도 비밀번호로 바뀌었으면 원본은 수정하지 않고 이 계정만 연결을 푼다.
+            sections: [
+              {
+                key: DEFAULT_SECTION_KEY,
+                label,
+                fields: [
+                  { key: DEFAULT_FIELD_KEY, label, kind: 'secret' as const, value: input.value }
+                ]
+              }
+            ]
+          }
+        : { value: input.value }),
       jobId: 'auto-update'
     })
 
@@ -1780,6 +1986,7 @@ export class VaultService {
       label,
       oldValue,
       hadExistingItem: !!existing,
+      ...(existing && loginSourceOf(existing.sections) ? { oldLoginLink: existing.sections } : {}),
       expiresAt
     })
     const timer = setTimeout(() => this.pendingUndos.delete(undoToken), UNDO_TTL_MS)
@@ -1799,7 +2006,16 @@ export class VaultService {
     if (Date.now() > pending.expiresAt) return false
     if (!this.key) return false
 
-    if (pending.hadExistingItem && pending.oldValue !== null) {
+    if (pending.oldLoginLink) {
+      this.putItem({
+        id: pending.itemId,
+        accountId: pending.accountId,
+        type: 'login',
+        label: pending.label,
+        sections: pending.oldLoginLink,
+        jobId: 'undo-auto-update'
+      })
+    } else if (pending.hadExistingItem && pending.oldValue !== null) {
       this.putItem({
         id: pending.itemId,
         accountId: pending.accountId,

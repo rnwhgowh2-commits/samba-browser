@@ -64,7 +64,13 @@ function build(opts: {
   hasTab?: boolean
   bounds?: { width: number; height: number }
   capturePage?: () => Promise<ReturnType<typeof fakeNativeImage>>
-}): { tools: ToolStub[]; steps: Array<{ label: string; ok: boolean }> } {
+  repaintResult?: boolean
+}): {
+  tools: ToolStub[]
+  steps: Array<{ label: string; ok: boolean }>
+  repaint: ReturnType<typeof vi.fn>
+  front: ReturnType<typeof vi.fn>
+} {
   const bounds = opts.bounds ?? { width: 800, height: 600 }
   const capturePage = opts.capturePage ?? (async () => fakeNativeImage(2560, 1440))
   const fakeTab = {
@@ -80,7 +86,11 @@ function build(opts: {
     mobile: false
   }
   const steps: Array<{ label: string; ok: boolean }> = []
+  const repaint = vi.fn(() => opts.repaintResult ?? true)
+  const front = vi.fn(async (_id: string, fn: () => Promise<unknown>) => fn())
   const tabs = {
+    withFront: front,
+    repaintTab: repaint,
     active: () => (opts.hasTab === false ? null : fakeTab),
     create: vi.fn(),
     activate: vi.fn(),
@@ -97,12 +107,28 @@ function build(opts: {
     onStep: (label, ok) => steps.push({ label, ok })
   }
   const server = createSambaTools(ctx) as unknown as { tools: ToolStub[] }
-  return { tools: server.tools, steps }
+  return { tools: server.tools, steps, repaint, front }
 }
 
 const get = (tools: ToolStub[], name: string): ToolStub => tools.find((t) => t.name === name)!
 
 describe('screenshot 도구', () => {
+  it('스크롤도 앞 층에서 실행하고 완료 후 복원을 기다린다', async () => {
+    const { tools, front } = build({})
+    let restored = false
+    const { pageBridge } = await import('../src/main/browser/page-bridge')
+    front.mockImplementationOnce(async (_id, fn) => {
+      expect(pageBridge.scroll).not.toHaveBeenCalled()
+      const result = await fn()
+      expect(pageBridge.scroll).toHaveBeenCalled()
+      restored = true
+      return result
+    })
+    vi.mocked(pageBridge.scroll).mockClear()
+    await get(tools, 'scroll').handler({ direction: 'down' })
+    expect(front).toHaveBeenCalledWith('t1', expect.any(Function))
+    expect(restored).toBe(true)
+  })
   it('활성 탭을 캡처해 image 블록과 text 블록을 함께 돌려준다', async () => {
     const { tools, steps } = build({})
     const r = await get(tools, 'screenshot').handler({})
@@ -136,5 +162,44 @@ describe('screenshot 도구', () => {
     const { tools } = build({ bounds: { width: 0, height: 0 } })
     const r = await get(tools, 'screenshot').handler({})
     expect(r.content).toEqual([{ type: 'text', text: 'no visible page' }])
+  })
+
+  it('캡처가 시간 안에 안 돌아오면(안 그려지는 탭) 보이는 탭을 다시 그리고 오류로 돌려준다', async () => {
+    vi.useFakeTimers()
+    try {
+      const { tools, steps, repaint } = build({ capturePage: () => new Promise(() => {}) })
+      const pending = get(tools, 'screenshot').handler({})
+      await vi.advanceTimersByTimeAsync(21_000)
+      const r = await pending
+      expect(r.content).toHaveLength(1)
+      expect((r.content[0] as TextBlock).text).toContain('timed out')
+      expect(repaint).toHaveBeenCalledWith('t1', 'capture-timeout')
+      expect((r.content[0] as TextBlock).text).toContain('was repainted')
+      expect(steps.at(-1)).toEqual({ label: '화면 캡처', ok: false })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('다시 그릴 수 없는 대상(팝업·죽은 탭)이면 복구했다고 안내하지 않는다', async () => {
+    vi.useFakeTimers()
+    try {
+      const { tools } = build({ capturePage: () => new Promise(() => {}), repaintResult: false })
+      const pending = get(tools, 'screenshot').handler({})
+      await vi.advanceTimersByTimeAsync(21_000)
+      const r = await pending
+      const msg = (r.content[0] as TextBlock).text
+      expect(msg).toContain('timed out')
+      expect(msg).toContain('could not be repainted')
+      expect(msg).not.toContain('was repainted')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('정상 캡처는 다시 그리기를 부르지 않는다', async () => {
+    const { tools, repaint } = build({})
+    await get(tools, 'screenshot').handler({})
+    expect(repaint).not.toHaveBeenCalled()
   })
 })

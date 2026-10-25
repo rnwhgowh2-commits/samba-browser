@@ -82,3 +82,27 @@ def check_buyer(result: AgentResult, seller: str | None = None) -> AgentResult:
             evidence=result.evidence,
         )
     return result
+
+
+def check_buyer_autopay(result: AgentResult) -> AgentResult:
+    """자동결제 구매 결과 검사 — 마진은 삼바가 이미 판정했다(역마진 포함). 삼바 판정 통과 표시와 결제수단이 있어야 결제로 넘어간다."""
+    if result.status != 'ok':
+        return result
+    payload = result.payload
+    if payload.get('autopay_verified') is not True:
+        return AgentResult(
+            status='needs_human',
+            reason='감독자 검사: 삼바 결제 전 판정을 받지 못했다(자동결제)',
+            fail_reason=FailReason.VERIFY_MISMATCH,
+            payload=payload,
+            evidence=result.evidence,
+        )
+    if not payload.get('card'):
+        return AgentResult(
+            status='fail',
+            reason='감독자 검사: 결제할 카드가 정해지지 않았다',
+            fail_reason=FailReason.CARD_MISSING,
+            payload=payload,
+            evidence=result.evidence,
+        )
+    return result

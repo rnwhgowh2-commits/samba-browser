@@ -272,7 +272,13 @@ export class VaultRepo {
       : (this.d
           .select()
           .from(accounts)
-          .where(and(eq(accounts.siteId, siteId), eq(accounts.username, input.username)))
+          .where(
+            and(
+              eq(accounts.siteId, siteId),
+              eq(accounts.username, input.username),
+              this.scopeWhere(accounts.workspaceId)
+            )
+          )
           .get() ?? null)
 
     if (existing) {

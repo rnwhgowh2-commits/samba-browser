@@ -15,6 +15,7 @@ from collections.abc import Callable
 from langgraph.checkpoint.sqlite import SqliteSaver
 from slack_bolt import App
 
+from samba_agent.agents.autopay import is_autopay
 from samba_agent.agents.buyer import BuyerAgent
 from samba_agent.agents.factory import build_agents
 from samba_agent.agents.payer import PayerAgent
@@ -35,6 +36,12 @@ from samba_agent.ops.masking import mask_text
 from samba_agent.ops.releases import ReleaseStore
 from samba_agent.ops.site_scripts import install_missing
 from samba_agent.ops.tracing import configure_tracing
+from samba_agent.queue.autopay_intake import (
+    MAX_AUTO_RETRIES,
+    RETRY_REST_S,
+    RETRYABLE_REASONS,
+    AutopayIntake,
+)
 from samba_agent.queue.db import Job, JobQueue
 from samba_agent.queue.intake import Intake
 from samba_agent.queue.orders import LOOKUP_TOOLS, parse_order_fn
@@ -47,6 +54,7 @@ from samba_agent.repair import (
     app_supports_pay_guard,
 )
 from samba_agent.settings import Settings, load_settings
+from samba_agent.sources import default_sources
 from samba_agent.supervisor.graph import build_supervisor
 from samba_agent.version import harness_version
 from samba_agent.wave.client import WaveClient
@@ -106,6 +114,28 @@ def make_cancel_export(
     queue = ExportQueue(settings.export_db_path)
     routing = ExportRouting.load(settings.export_routing_file)
     return make_cancel_exporter(queue, routing, lambda order_no: wave.get_order(order_no).seller)
+
+
+def _autopay_stop_note(wave: WaveClient) -> Callable[[Job, str, str], None]:
+    """자동결제 작업이 끝내 막히면 그 사유를 삼바 주문의 간단메모 밑 '자동결제' 칸에 적는다(사람이 알아야 할 이슈).
+
+    결제 전 막힘(앱 busy·로그인 응답 없음)은 접수가 쉬었다가 다시 하므로 '자동 재시도 대기', 그 밖은 '확인 필요'다.
+    """
+
+    def note(job: Job, fail: str, reason: str) -> None:
+        if not is_autopay(job.options):
+            return
+        text = reason or fail or '알 수 없는 사유'
+        if fail in RETRYABLE_REASONS and job.attempts < MAX_AUTO_RETRIES:
+            wave.autopay_status(
+                job.order_no,
+                'retry',
+                f'{text} · {RETRY_REST_S // 60}분 쉬고 자동 재시도({job.attempts + 1}/{MAX_AUTO_RETRIES})',
+            )
+        else:
+            wave.autopay_status(job.order_no, 'action', f'{text} (사유 {fail or "-"})')
+
+    return note
 
 
 def _bridge_ready(bridge: BridgeClient) -> bool:
@@ -291,10 +321,14 @@ def main() -> None:
             prompt_commit=settings.prompt_commit,
             prune=events.prune,
             # 작업이 연 탭은 끝날 때 닫는다 — 옛 주문서 탭을 다음 작업이 읽던 문제(실기)
-            tabs=TabJanitor(bridge.scoped(list(TAB_TOOLS))),
+            tabs=TabJanitor(
+                bridge.scoped(list(TAB_TOOLS)),
+                scope_hosts=tuple(s.login_host for s in default_sources() if s.login_host),
+            ),
             # 앱 채팅이 도는 동안(409 busy)·앱이 꺼진 동안은 큐를 집지 않는다
             ready=lambda: _bridge_ready(bridge),
             flag_order=flagger.mark if flagger is not None else None,
+            stop_note=_autopay_stop_note(wave) if wave is not None and settings.autopay_enabled else None,
             sources=frozenset(
                 x.strip().upper() for x in settings.intake_sources.split(',') if x.strip()
             ),
@@ -329,8 +363,14 @@ def main() -> None:
             ),
             # 이행 불가(소싱처 상품 삭제) — 재고X 표시 + 취소요청
             on_unfulfillable=flagger.mark if flagger is not None else None,
+            skip_autopay=settings.autopay_enabled,
         )
         bot.intake = intake
+
+    # 무신사 자동결제 접수 — 삼바 최저가 비교·판정, 구매·결제는 이 하네스(결제는 SAMBA_DRY_RUN=false 일 때만)
+    autopay_intake: AutopayIntake | None = None
+    if wave is not None and settings.autopay_enabled:
+        autopay_intake = AutopayIntake(wave, queue, bot.post_new, bot.post, max_new=settings.autopay_max_new)
 
     app = build_app(
         reg=reg,
@@ -373,6 +413,13 @@ def main() -> None:
             target=notifier.run_forever, args=(stop.is_set,), daemon=True, name='export-notify'
         ).start()
 
+    if autopay_intake is not None:
+        threading.Thread(
+            target=autopay_intake.run_forever,
+            args=(stop.is_set, float(settings.autopay_interval_s)),
+            daemon=True,
+            name='autopay-intake',
+        ).start()
     if intake is not None:
         threading.Thread(
             target=intake.run_forever,

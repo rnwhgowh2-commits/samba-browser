@@ -147,6 +147,7 @@ import { registerTranslate } from '../translate/register'
 import { registerCaptureIpc } from '../capture/capture-ipc'
 import { isAllowedCaptureDir } from '../capture/paths'
 import type { CaptureShortcutInput } from '../../shared/capture'
+import { isRepaintShortcut } from '../browser/paint-diag'
 import { tr } from '../i18n'
 
 /**
@@ -1184,8 +1185,14 @@ export function registerIpc(
   }
   // 캡처 단축키(Alt+1~6)도 같은 창 안 입력 경로를 쓴다. 캡처 배선은 아래에서 붙는다
   let handleCaptureShortcut: (input: CaptureShortcutInput) => boolean = () => false
+  // Ctrl+Alt+R — 탭이 흰 화면으로 안 그려질 때 보이는 탭의 층을 다시 쌓고 다시 칠한다(paint-diag.ts)
+  const handleRepaintShortcut = (input: CaptureShortcutInput): boolean => {
+    if (!isRepaintShortcut(input)) return false
+    tabs.repaintActive('shortcut')
+    return true
+  }
   const handleWindowShortcut = (input: CaptureShortcutInput): boolean =>
-    handleWorkspaceShortcut(input) || handleCaptureShortcut(input)
+    handleWorkspaceShortcut(input) || handleCaptureShortcut(input) || handleRepaintShortcut(input)
   win.webContents.on('before-input-event', (e, input) => {
     if (handleWindowShortcut(input)) e.preventDefault()
     // 사이드바 등 앱 화면에 포커스가 있어도 Ctrl+± 는 보이는 탭을 확대·축소한다

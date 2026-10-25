@@ -20,7 +20,7 @@ Electron 39 · React 19 · TypeScript · Tailwind CSS · MIT 라이선스 · Win
 ### 받아서 실행
 
 ```bash
-git clone https://github.com/sbk0674-web/samba-browser.git
+git clone --branch samba-local https://github.com/sbk0674-web/samba-browser.git
 cd samba-browser
 pnpm install   # 30초~3분 (Electron 내려받기 포함)
 pnpm dev       # 브라우저 창이 뜹니다
@@ -121,6 +121,8 @@ pnpm build    # typecheck + electron-vite build
 코딩 규칙: 들여쓰기 2칸, 세미콜론 없음, 작은따옴표, `any` 금지, 주석·커밋 메시지는 한국어.
 
 ## 문서
+
+- **[2026-10-25 탭별 개발 내용](docs/development-status-2026-10-25.md)** — 현재 개발본 `samba-local`의 화면·설정·MCP·하네스 기능과 검증 기록
 
 - **[PRD](docs/PRD.md)** — 제품 요구사항
 - **[기술스택](docs/기술스택.md)** — 사용 기술 및 라이브러리

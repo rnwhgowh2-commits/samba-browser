@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   buildSnapshot,
   performClick,
@@ -39,6 +39,10 @@ beforeEach(() => {
 })
 
 describe('buildSnapshot', () => {
+  it('카페24의 이름 없는 네이버 간편로그인 앵커에 이름을 붙인다', () => {
+    document.body.innerHTML = `<a onclick="MemberAction.snsLogin('naver', '%2Findex.html')"></a><a onclick="MemberAction.snsLogin('facebook', '%2Findex.html')"></a>`
+    expect(buildSnapshot().elements.map((e) => e.text)).toEqual(['네이버로 로그인', ''])
+  })
   it('보이는 상호작용 요소만 번호 매김', () => {
     const s = buildSnapshot()
     const texts = s.elements.map((e) => e.text || e.name)
@@ -418,16 +422,25 @@ describe('커서 휴리스틱 — role·onclick 없는 클릭 가능한 DIV', ()
       (_, i) => `<div data-cursor="pointer">옵션${i}</div>`
     ).join('')
     document.body.innerHTML = divs
-    const started = Date.now()
-    const s = buildSnapshot()
-    const elapsed = Date.now() - started
-    // 수집은 개수 상한(4000)과 시간 예산(120ms) 둘 다로 끊긴다. 테스트를 여럿 동시에 돌리면
-    // 시간 예산이 먼저 걸려 4000에 살짝 못 미치므로, 상한이 600 같은 작은 값으로 되돌아가는
-    // 회귀(600 등 작은 값)만 잡도록 넉넉한 구간으로 단언한다
-    expect(s.total).toBeLessThanOrEqual(4000)
-    expect(s.total).toBeGreaterThan(1000)
-    // 회귀 방지용 넉넉한 상한(실측은 수 ms 수준)
-    expect(elapsed).toBeLessThan(3000)
+    // 개수 상한은 시간 예산과 분리해 검증한다. 병렬 테스트의 CPU 부하에 좌우되지 않는다.
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(0)
+    try {
+      expect(buildSnapshot().total).toBe(4000)
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('커서 후보 탐색의 시간 예산을 넘으면 수집을 중단한다', () => {
+    document.body.innerHTML = Array.from(
+      { length: 128 }, (_, i) => `<div data-cursor="pointer">옵션${i}</div>`
+    ).join('')
+    const clock = vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValue(121)
+    try {
+      expect(buildSnapshot().total).toBe(63)
+    } finally {
+      clock.mockRestore()
+    }
   })
 })
 

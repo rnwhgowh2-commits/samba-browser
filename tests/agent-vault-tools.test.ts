@@ -96,6 +96,8 @@ function build(
     state?: VaultState
     accounts?: AccountDto[]
     secret?: string | null
+    naverSso?: boolean
+    naverSourceAllowed?: boolean
     confirmResult?: boolean
     // 호스트를 알 수 없는 상황(정규화 실패)을 재현하기 위한 탭 URL 오버라이드
     tabUrl?: string
@@ -125,6 +127,9 @@ function build(
     listAccounts,
     getSecretForFill,
     getPaymentSecretForFill,
+    loginMethod: () => (opts.naverSso ? 'naver' : 'shared_password'),
+    naverLoginSource: () =>
+      opts.naverSourceAllowed === false ? null : account({ host: 'naver.com' }),
     ensureUnlockedByDevice
   } as unknown as VaultService
   // 탭 URL 은 이동·리다이렉트로 바뀔 수 있으므로 클로저로 읽는다
@@ -216,6 +221,20 @@ beforeEach(() => {
 })
 
 describe('금고 AI 도구', () => {
+  it('네이버 연결은 login 도구에서도 비밀번호를 읽거나 입력하지 않는다', async () => {
+    const b = build({ naverSso: true })
+    pageBridge.snapshot.mockResolvedValueOnce({
+      elements: [{ id: 78, text: '네이버로 로그인', isSecret: false }]
+    })
+    expect(await callTool(b, 'login')).toContain('submitted: Naver SSO')
+    expect(pageBridge.click).toHaveBeenCalledWith(expect.anything(), 78)
+    expect(b.getSecretForFill).not.toHaveBeenCalled()
+    expect(pageBridge.typeLogin).not.toHaveBeenCalled()
+    expect(pageBridge.findLoginFields).not.toHaveBeenCalled()
+    const denied = build({ naverSso: true, naverSourceAllowed: false })
+    expect(await callTool(denied, 'login')).toContain('source account unavailable')
+    expect(denied.getSecretForFill).not.toHaveBeenCalled()
+  })
   it('등록된다', () => {
     const b = build()
     expect([...b.tools.keys()]).toEqual(
@@ -584,7 +603,16 @@ describe('금고 AI 도구', () => {
     expect(b.listAccounts).toHaveBeenCalledWith('shop.example')
     expect(JSON.parse(raw)).toEqual({
       vaultLocked: true,
-      accounts: [{ label: '메인', username: 'ho***', types: ['login'], payments: [], priority: null, tags: [] }]
+      accounts: [
+        {
+          label: '메인',
+          username: 'ho***',
+          types: ['login'],
+          payments: [],
+          priority: null,
+          tags: []
+        }
+      ]
     })
   })
 
@@ -883,7 +911,14 @@ describe('list_accounts 응답', () => {
     const b = build({ accounts: [account({ tags: ['쇼핑', '해외'] })] })
     const raw = await callTool(b, 'list_accounts', {})
     expect(JSON.parse(raw)).toEqual([
-      { label: '메인', username: 'ho***', types: ['login'], payments: [], priority: null, tags: ['쇼핑', '해외'] }
+      {
+        label: '메인',
+        username: 'ho***',
+        types: ['login'],
+        payments: [],
+        priority: null,
+        tags: ['쇼핑', '해외']
+      }
     ])
   })
 

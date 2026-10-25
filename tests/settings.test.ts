@@ -54,18 +54,25 @@ describe('parseSettings — dangerWords 합집합', () => {
 
 describe('maxToolCalls 기본값', () => {
   // 주문 흐름(로그인→검색→옵션→장바구니→주문서)이 40회에서 끊겼던 회귀
-  it('기본 120회, 상한 200회', () => {
-    expect(DEFAULT_SETTINGS.maxToolCalls).toBe(200)
-    expect(MAX_TOOL_CALLS).toBe(400)
+  // 한도에 걸려 일이 멈추지 않도록 사실상 무제한(2026-10-24)
+  it('기본값과 상한이 같고 10만 회다', () => {
+    expect(DEFAULT_SETTINGS.maxToolCalls).toBe(100000)
+    expect(MAX_TOOL_CALLS).toBe(100000)
   })
-  it('빈 설정도 120회로 시작한다', () => {
-    expect(parseSettings({}).maxToolCalls).toBe(200)
+  it('빈 설정도 상한으로 시작한다', () => {
+    expect(parseSettings({}).maxToolCalls).toBe(MAX_TOOL_CALLS)
+  })
+  it('옛 저장 파일의 낮은 값(200)은 마이그레이션이 올린다', async () => {
+    const { migrateSettingsFile } = await import('../src/shared/settings')
+    const m = migrateSettingsFile({ vaultAutoSaveLoginsMigrated: true, maxToolCalls: 200 })
+    expect(m?.maxToolCalls).toBe(MAX_TOOL_CALLS)
+    expect(migrateSettingsFile({ vaultAutoSaveLoginsMigrated: true, maxToolCalls: MAX_TOOL_CALLS })).toBeNull()
   })
 })
 
 describe('parseSettings — maxToolCalls clamp', () => {
   it('과대값은 상한으로', () => {
-    expect(parseSettings({ maxToolCalls: 100000 }).maxToolCalls).toBe(MAX_TOOL_CALLS)
+    expect(parseSettings({ maxToolCalls: 10_000_000 }).maxToolCalls).toBe(MAX_TOOL_CALLS)
   })
   it('0·음수는 하한으로', () => {
     expect(parseSettings({ maxToolCalls: 0 }).maxToolCalls).toBe(MIN_TOOL_CALLS)

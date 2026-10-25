@@ -75,6 +75,9 @@ class WorkerDeps:
     # 브릿지가 지금 일을 받을 수 있는가(앱 채팅이 도는 동안은 409 busy). 거짓이면 큐를 집지 않고
     # 다음 주기를 기다린다 — 실기: 사용자가 앱에서 채팅을 돌리는 동안 5건이 전부 bridge_down 으로 사람에게 넘어갔다
     ready: Callable[[], bool] | None = None
+    # 사람이 알아야 할 막힘을 삼바 주문에 남긴다 — (작업, 실패 사유 코드, 사유 글자). 자동결제 작업만 연결한다.
+    # 사유를 슬랙에만 올리면 슬랙이 없을 때 아무도 모른다(실기 2026-10-06: 로그인 실패가 하네스 기록에만 남았다)
+    stop_note: Callable[[Job, str, str], None] | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.version, str):
@@ -110,6 +113,7 @@ class Worker:
             msg = mask_text(str(e))[:300]
             self.d.queue.finish(job.id, 'needs_human', error=f'주문 조회 실패: {msg}')
             self.d.report(job, f'주문 조회 실패 — 사람 확인 필요: {msg}')
+            self._stop_note(job, '', f'주문 조회 실패 — {msg}')
             return self.d.queue.get(job.order_no)
         if self.d.sources and order.source.upper() not in self.d.sources:
             why = f'처리 범위 밖 소싱처: {order.source or "(없음)"} — 범위 {sorted(self.d.sources)}'
@@ -296,6 +300,15 @@ class Worker:
             self.d.graph.invoke
         )
 
+    def _stop_note(self, job: Job, fail: str, reason: str) -> None:
+        """끝내 막힌 작업의 사유를 삼바에 남긴다. 실패해도 작업 처리를 막지 않는다."""
+        if self.d.stop_note is None:
+            return
+        try:
+            self.d.stop_note(job, fail, mask_text(reason)[:200])
+        except Exception:  # noqa: BLE001 — 알림 실패가 큐 마감을 막으면 안 된다
+            _log.exception('막힘 사유를 삼바에 남기지 못했다: %s', job.order_no)
+
     def _invoke(self, job: Job, arg: object) -> Job:
         """그래프를 부르고, 예외가 나면 사람에게 넘긴다(스펙 리뷰 지적 — Important 1)."""
         try:
@@ -311,6 +324,7 @@ class Worker:
         self.d.queue.progress(job.id, agent=None, step=None)
         self.d.queue.finish(job.id, 'needs_human', error=str(FailReason.UNKNOWN))
         self.d.report(job, f'{job.order_no} 처리 중 오류로 사람에게 넘긴다 — {masked}')
+        self._stop_note(job, str(FailReason.UNKNOWN), f'처리 중 오류 — {masked}')
         return self.d.queue.get(job.order_no)  # type: ignore[return-value]
 
     def _apply(self, job: Job, out: dict) -> Job:
@@ -348,6 +362,8 @@ class Worker:
             job,
             f'{job.order_no} {outcome}' + (f' — 사유 {fail}' if fail else ' — 완료'),
         )
+        if outcome != 'done':
+            self._stop_note(job, str(fail or ''), _failed_reason(out) or str(outcome))
         export_alert = _export_alert(out)
         if export_alert is not None:
             self.d.report(job, mask_text(f'{job.order_no} 외부 기입 {export_alert}')[:200])

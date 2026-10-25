@@ -37,8 +37,14 @@ def _env(key: str) -> str:
 class TabJanitor:
     """작업 시작 시 탭 목록을 찍어 두고, 끝나면 그 뒤에 생긴 탭만 닫는다."""
 
-    def __init__(self, bridge: BridgeClient) -> None:
+    def __init__(self, bridge: BridgeClient, scope_hosts: tuple[str, ...] = ()) -> None:
         self._bridge = bridge
+        # 비어 있지 않으면 이 호스트가 URL 에 든 탭만 정리 대상 — 삼바 브라우저를 다른 세션이 같이 쓰면 그쪽 탭(롯데홈쇼핑 로그인 등)을
+        # 하네스가 닫아 버렸다(실기 2026-10-06). 하네스가 다루는 소싱처 호스트로 좁힌다
+        self._scope = tuple(h for h in scope_hosts if h)
+
+    def _in_scope(self, url: str) -> bool:
+        return not self._scope or any(h in url for h in self._scope)
 
     def _tabs(self) -> list[dict[str, object]]:
         try:
@@ -61,7 +67,7 @@ class TabJanitor:
                 continue
             # 다른 레인(사람의 수동 작업·계정 비교)이 연 탭은 그 레인이 닫는다 — 하네스가 닫으면 남의 주문서가
             # 사라진다(실기 2026-09-27 패션플러스·SMARKET 수동 진행 중 탭이 닫힘)
-            if t.get('lane'):
+            if t.get('lane') or not self._in_scope(str(t.get('url') or '')):
                 continue
             try:
                 self._bridge.call('close_tab', id=tab_id)
@@ -84,7 +90,7 @@ class TabJanitor:
         for t in self._tabs():
             tab_id = str(t.get('id') or '')
             url = str(t.get('url') or '')
-            if not tab_id or any(h in url for h in keep_hosts):
+            if not tab_id or any(h in url for h in keep_hosts) or not self._in_scope(url):
                 continue
             try:
                 self._bridge.call('close_tab', id=tab_id)

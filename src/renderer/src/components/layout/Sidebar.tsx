@@ -10,6 +10,7 @@ import { OpenTabs } from './OpenTabs'
 import { SectionHeader } from './SectionHeader'
 import { SIDEBAR_ITEMS, showSectionBody } from './sidebar-view'
 import { WorkspaceSwitcher } from '@renderer/components/workspace/WorkspaceSwitcher'
+import { DragStrip } from './DragStrip'
 
 // 사이드바 위쪽 이동 항목. 목록 자체는 sidebar-view 에 있고(테스트가 지킨다) 여기서는
 // 아이콘만 붙인다. 자동화·키마스터·폰은 설정 안으로 옮겼다(설정 → 자동화 / 키마스터 / 폰)
@@ -34,10 +35,12 @@ export function Sidebar({ width }: { width: number }): React.JSX.Element {
     <aside
       style={{ width }}
       className={cn(
-        'flex min-h-0 shrink-0 flex-col border-r border-[var(--line)] bg-[#f6f6f8]/90 pt-10 backdrop-blur',
+        'relative flex min-h-0 shrink-0 flex-col border-r border-[var(--line)] bg-[#f6f6f8]/90 pt-10 backdrop-blur',
         collapsed ? 'items-center p-1.5' : 'p-2.5'
       )}
     >
+      {/* 위쪽 빈 곳을 잡고 끌면 창이 움직인다 */}
+      <DragStrip className="h-10" />
       {/* 접기 토글 + 제품 이름. 접히면 아이콘만 남는다 */}
       <div className={cn('flex items-center pb-3', collapsed ? 'justify-center' : 'gap-1.5 px-1')}>
         <button

@@ -39,6 +39,8 @@ import { formatDialogNote } from '../browser/dialogs'
 import { createOcrTool, ocrDigitInRegion, resolveKeypadDigits, type DigitRead } from './tools-ocr'
 import { createNetworkTools, NETWORK_TOOL_NAMES } from './tools-network'
 import { createPageTools, PAGE_TOOL_NAMES } from './tools-page'
+import { createAccountTools, ACCOUNT_TOOL_NAMES } from './tools-accounts'
+import { loginWithNaverSession } from './login-social'
 import {
   createPayTool,
   createPhoneTools,
@@ -63,6 +65,7 @@ import {
 } from './target'
 import type { AgentTarget } from '../browser/targets'
 import { automationBlocked, bridgeOrigin, runAsAutomation } from '../browser/human-activity'
+import { CAPTURE_TIMEOUT, paintDiag, shortId, withCaptureTimeout } from '../browser/paint-diag'
 import type { AgentToolCall, SiteActionTool } from '../../shared/site-memory'
 import type { HandoffKind } from '../../shared/ipc'
 import { PLAYBOOK_INSTRUCTIONS_MAX, type PlaybookDto } from '../../shared/playbook'
@@ -179,6 +182,11 @@ export const PAYMENT_KEYPAD_REFUSAL =
 // 비밀 키패드 화면에서 화면 읽기(screenshot·ocr)를 거부할 때 돌려주는 문자열(폰 도구와 같은 톤).
 // 숫자 배치를 모델에게 보여 주지 않는다
 export const SECRET_SCREEN_REFUSAL = 'refused: secret screen'
+
+/** 화면 캡처가 이 시간 안에 안 돌아오면 안 그려지는 탭으로 본다(도구 제한 90초보다 한참 짧게) */
+const SCREENSHOT_TIMEOUT_MS = 20_000
+/** 이보다 오래 걸린 캡처는 진단 기록에 남긴다 */
+const SCREENSHOT_SLOW_MS = 3_000
 // 비밀 키패드 화면에서 fill_secret 이 사람에게 넘길 때의 안내
 export const KEYPAD_HANDOFF_MESSAGE = '결제 비밀번호는 직접 눌러 주세요'
 // 사용자가 키패드 넘김을 건너뛴 뒤 모델이 할 일(같은 키패드에 다시 시도하지 않게)
@@ -634,7 +642,11 @@ export async function findLoginFieldsWithFallback(
     }
     fields = await detect()
     // 통합 로그인은 다른 도메인을 거쳐 오느라 늦게 뜬다(실기: 29CM → member.one.musinsa.com) — 두 배로 기다린다
-    for (let attempt = 0; fields.stage === 'none' && attempt < LOGIN_FIELDS_POLL_MAX * 2; attempt += 1) {
+    for (
+      let attempt = 0;
+      fields.stage === 'none' && attempt < LOGIN_FIELDS_POLL_MAX * 2;
+      attempt += 1
+    ) {
       await new Promise((resolve) => setTimeout(resolve, LOGIN_FIELDS_POLL_MS))
       fields = await detect()
     }
@@ -1138,7 +1150,8 @@ ${raw}`
     const attemptKey = currentHost(tab)
     // 세션을 넘는 기록은 창(id)별이다 — 호스트만 보면 다음 주문의 새 결제창(같은 pay.naver.com)까지 막힌다
     const windowKey = `${tab.id}|${attemptKey}`
-    if (keypadAttempts.has(attemptKey) || ctx.keypadEntered?.has(windowKey)) return KEYPAD_ALREADY_TRIED
+    if (keypadAttempts.has(attemptKey) || ctx.keypadEntered?.has(windowKey))
+      return KEYPAD_ALREADY_TRIED
     // 글자·이름으로 읽히는 키패드가 먼저다. 못 읽으면(네이버페이처럼 숫자를 이미지로 그린 키패드)
     // 빈 버튼들을 OCR 로 읽어 배치를 만든다 — 둘 다 안 되면 사람에게 넘긴다
     const labelled = await pageBridge.keypadLayout(tab).catch(() => null)
@@ -1420,7 +1433,14 @@ ${handoffToolResult(result)}`
     if (!tab) return 'no active tab'
     const keypad = await keypadRefusal(tab, PAYMENT_KEYPAD_REFUSAL)
     if (keypad) return keypad
-    return pageBridge.scroll(tab, direction, id)
+    // 뒤 층 레인 탭은 가려진 상태에서 무한 목록의 IntersectionObserver 가 갱신되지 않는다.
+    // 스크롤과 다음 렌더링 동안만 앞으로 올리고, 사용자가 보던 탭은 withFront 가 복원한다.
+    return ctx.tabs.withFront(tab.id, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const result = await pageBridge.scroll(tab, direction, id)
+      await new Promise((resolve) => setTimeout(resolve, 250))
+      return result
+    })
   }
 
   const getPage = tool(
@@ -1511,7 +1531,29 @@ ${handoffToolResult(result)}`
           ctx.onStep('화면 캡처', false)
           return text(SECRET_SCREEN_REFUSAL)
         }
-        const image = await tab.view.webContents.capturePage()
+        // 화면이 안 그려지는 탭은 capturePage 가 영영 안 돌아온다(실기 2026-10-24: 도구 제한 90초 초과).
+        // 시간 제한을 걸고, 넘으면 보이는 탭을 다시 그려 놓은 뒤 오류로 돌려준다(paint-diag.ts)
+        const capturedAt = Date.now()
+        const shot = await ctx.tabs.withFront(tab.id, async () => {
+          await new Promise((resolve) => setTimeout(resolve, 100))
+          return withCaptureTimeout(tab.view.webContents.capturePage(), SCREENSHOT_TIMEOUT_MS)
+        })
+        if (shot === CAPTURE_TIMEOUT) {
+          paintDiag('capture-timeout', { tab: shortId(tab.id), ms: Date.now() - capturedAt })
+          // 캡처 대상은 보이는 탭이 아닐 수 있다(자동화 대상·팝업) — 실제로 다시 그렸을 때만 그렇게 안내한다
+          const repainted = ctx.tabs.repaintTab?.(tab.id, 'capture-timeout') === true
+          ctx.onStep('화면 캡처', false)
+          return text(
+            repainted
+              ? 'error: screenshot timed out - the page was not painting. The tab was repainted; try again.'
+              : 'error: screenshot timed out - the page was not painting. The tab could not be repainted.'
+          )
+        }
+        const captureMs = Date.now() - capturedAt
+        if (captureMs > SCREENSHOT_SLOW_MS) {
+          paintDiag('capture-slow', { tab: shortId(tab.id), ms: captureMs })
+        }
+        const image = shot
         const { width, height } = image.getSize()
         // 긴 변을 1280px 로 맞춰 리사이즈(비율 유지)
         const resized =
@@ -1812,7 +1854,9 @@ overlays left: ${after.length}${kept}`
           // 라벨 글자로 체크박스 켜기(동의 칸). 결제 확정 버튼이 아니라 no_pay 에서도 허용한다
           const tab = activeOr(ctx)
           if (!tab) return 'no active tab'
-          return await pageBridge.checkByLabel(tab, asText(args[0])).catch((e: unknown) => `failed: ${e instanceof Error ? e.message : String(e)}`)
+          return await pageBridge
+            .checkByLabel(tab, asText(args[0]))
+            .catch((e: unknown) => `failed: ${e instanceof Error ? e.message : String(e)}`)
         }
         case 'page.url':
           return currentUrl()
@@ -2177,6 +2221,24 @@ overlays left: ${after.length}${kept}`
           if (!tab) return 'error: could not open a background tab'
           const host = currentHost(tab)
           label = `로그인: ${host}`
+          const siteAccount = resolveAccount(
+            available.listAccounts(host),
+            accountLabel,
+            tab.profile
+          )
+          if (siteAccount && available.loginMethod?.(siteAccount.id) === 'naver') {
+            const allowed = await applyPolicy(
+              available,
+              effectiveAccess(siteAccount.agentAccess, globalPolicy())
+            )
+            if (typeof allowed === 'string') return allowed
+            if (!allowed.naverLoginSource(siteAccount.id))
+              return 'refused: Naver source account unavailable or access denied'
+            if (ctx.vaultAutoSubmit === false)
+              return 'submit is disabled by setting: press the site Naver login button'
+            label = `네이버 간편로그인: ${host} (${siteAccount.label})`
+            return await loginWithNaverSession(ctx.tabs, tab)
+          }
           // 이미 로그인돼 있으면 다시 로그인하지 않는다 — 재로그인은 세션을 새로 만들어
           // 캡차·추가 인증을 불러오기 때문이다. 폼이 없을 때만 상태 힌트를 본다
           const first = await pageBridge.findLoginFields(tab)
@@ -2550,6 +2612,7 @@ ${submittedNote}`
     switchTab,
     closeTab,
     listAccounts,
+    ...createAccountTools(ctx, (label, fn) => guard(label, fn)),
     fillSecret,
     login,
     progress,
@@ -2593,6 +2656,7 @@ export const SAMBA_TOOL_NAMES = [
   'switch_tab',
   'close_tab',
   'list_accounts',
+  ...ACCOUNT_TOOL_NAMES,
   'fill_secret',
   'login',
   'progress',

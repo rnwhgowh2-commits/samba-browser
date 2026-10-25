@@ -610,6 +610,7 @@ def test_고객_전화번호는_어디에도_입력하지_않는다(reg):
         'elementId': 7,
         'itemType': 'identity',
         'field': 'identity.phone',
+        'accountLabel': 'buyer01',
     }
     # 어떤 도구 호출에도 고객 번호가 실리지 않았다
     for call in respx.calls:
@@ -640,6 +641,7 @@ def test_스크립트가_알린_전화_형식대로_채운다(reg):
         'itemType': 'identity',
         'field': 'identity.phone',
         'format': 'phone-rest',
+        'accountLabel': 'buyer01',
     }
 
 
@@ -863,16 +865,16 @@ def test_정산금이_있으면_정산금_기준으로_마진을_계산한다(re
     assert not any('근사' in e.detail for e in out.evidence)
 
 
-def test_포이즌_외_까대기_마진은_배송비_2300원까지_넣고_본다(reg):
+def test_포이즌_외_까대기_마진은_배송비_2600원까지_넣고_본다(reg):
     # 실기 2026-09-26 174·181: 배송비를 빼고 +1.3~1.6% 로 보고 결제했는데 실제 −0.5% 적자
     from samba_agent.agents.buyer import shipping_fee_for
 
     buyer = agent(reg, lambda p, m: m(choice='260', reason='일치'))
     order = ORDER.model_copy(update={'sale_price': 100000, 'revenue': 81825, 'order_type': 'kkadaegi'})
     fee = shipping_fee_for(order, 'kkadaegi')
-    assert fee == 2300
-    # (81,825 − 80,114 − 2,300) ÷ 100,000 = −0.6%
-    assert buyer._margin(order, 80114 + fee, 0) == -0.6
+    assert fee == 2600
+    # (81,825 − 80,114 − 2,600) ÷ 100,000 = −0.9%
+    assert buyer._margin(order, 80114 + fee, 0) == -0.9
     poison = order.model_copy(update={'seller': 'poison(x)'})
     assert shipping_fee_for(poison, 'kkadaegi') == 0
 
@@ -1287,7 +1289,7 @@ def test_직배_까대기_판정_규칙():
     # 그 외 마켓: 정가 vs 고객 결제액
     assert decide_order_type(order('쿠팡', 50000), 79000)[0] == 'direct'
     assert decide_order_type(order('쿠팡', 50000), 39000)[0] == 'kkadaegi'
-    assert shipping_fee_for(order('쿠팡', 50000), 'kkadaegi') == 2300
+    assert shipping_fee_for(order('쿠팡', 50000), 'kkadaegi') == 2600
     assert shipping_fee_for(order('쿠팡', 50000), 'direct') == 0
     # 정가 모르면 판정 불가, 고객 결제액을 모르면 태그를 따른다
     assert decide_order_type(order('쿠팡', 50000), None)[0] == ''
@@ -1546,7 +1548,7 @@ def test_라자다_배대지_주문은_까대기다(reg):
 
     o = OrderRef(order_no='L1', source='무신사', seller='신세계몰(x)', sku='S', sale_price=38800)
     assert decide_order_type(o, 99000, None, forwarder=True)[0] == 'kkadaegi'
-    assert shipping_fee_for(o, 'kkadaegi') == 2300
+    assert shipping_fee_for(o, 'kkadaegi') == 2600
 
     a = agent(reg, lambda _p, _m: '{}')
     a.set_shipping_provider(

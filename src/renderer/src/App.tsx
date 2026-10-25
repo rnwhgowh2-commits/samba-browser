@@ -25,6 +25,7 @@ import { canResizeSidebar, sidebarWidthOf } from '@renderer/components/layout/si
 import { useVaultStore } from '@renderer/stores/vaultStore'
 import { useAuthStore } from '@renderer/stores/authStore'
 import { LoginGate } from '@renderer/components/layout/LoginGate'
+import { DragStrip } from '@renderer/components/layout/DragStrip'
 
 export default function App(): React.JSX.Element {
   // 진행 띠에 보여 줄 도구 호출 상한(설정값). 읽기 전까지는 기본값
@@ -127,7 +128,9 @@ export default function App(): React.JSX.Element {
           }
         />
       )}
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col pt-2.5 pr-2.5">
+      <main className="relative flex min-h-0 min-w-0 flex-1 flex-col pt-2.5 pr-2.5">
+        {/* 카드 위 10px 여백도 끌 수 있게 — 탭 줄 빈 곳과 이어진다 */}
+        <DragStrip className="h-2.5" />
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-2xl border border-[var(--line)] bg-white shadow-[0_1px_2px_rgba(0,0,0,.04),0_8px_24px_rgba(0,0,0,.06)]">
           {view === 'browser' ? (
             <>

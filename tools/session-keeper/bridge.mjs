@@ -54,6 +54,14 @@ async function request(path, { method = 'GET', body, lane, timeoutMs } = {}) {
 
 export async function health() {
   const r = await request('/health')
+  // 앱 채팅 중 /health는 409지만 독립 레인은 사용 가능하다. 연결 단절로 오판해 점검을 멈추지 않는다.
+  if (r.status === 409) {
+    const lane = 'keeper-health'
+    const probe = await request('/tool/list_tabs', { method: 'POST', body: { args: {} }, lane, timeoutMs: 10_000 })
+    if (probe.status === 200 && probe.json.ok && probe.json.lane === lane) return ['list_tabs']
+    if (probe.status === 409) throw new BridgeBusy('앱이 다른 작업 중입니다(409)')
+    return null
+  }
   return r.status === 200 ? r.json.tools ?? [] : null
 }
 

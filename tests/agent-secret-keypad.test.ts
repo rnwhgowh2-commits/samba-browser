@@ -242,6 +242,7 @@ function build(
     create: vi.fn(),
     activate: vi.fn(),
     list: () => [],
+    withFront: async <T>(_id: string, run: () => Promise<T>): Promise<T> => run(),
     navigate: vi.fn(async () => {})
   } as unknown as TabManager
   const ctx: ToolContext = {

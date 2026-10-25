@@ -1,5 +1,6 @@
 """등록부 → 실제 에이전트 객체. 감독자는 이 사전만 받는다."""
 
+from samba_agent.agents.autopay import AutopayRecorderAgent, AutopayVerifierAgent
 from samba_agent.agents.base import AgentFailure, DecideFn
 from samba_agent.agents.buyer import BuyerAgent, ScriptsPendingBuyer, ShippingFn
 from samba_agent.agents.payer import PayerAgent
@@ -16,6 +17,13 @@ _CLASSES = {
     'payer': PayerAgent,
     'recorder': RecorderAgent,
     'verifier': VerifierAgent,
+}
+
+
+# 자동결제 전용 기록·검증(등록부의 autopay 옵션 행) — 삼바가 판정·입력한다
+_AUTOPAY_CLASSES = {
+    'autopay_recorder': AutopayRecorderAgent,
+    'autopay_verifier': AutopayVerifierAgent,
 }
 
 
@@ -41,11 +49,12 @@ def build_agents(
         if source is not None and source.status == 'scripts_pending':
             agents[spec.name] = ScriptsPendingBuyer(spec, source)
             continue
-        agent = _CLASSES[spec.kind](spec, bridge, decide)
+        agent = _AUTOPAY_CLASSES.get(spec.name, _CLASSES[spec.kind])(spec, bridge, decide)
         if isinstance(agent, BuyerAgent):
             agent.set_shipping_provider(shipping_fn)
+            agent.set_wave(wave)  # 자동결제: 삼바 결제 전 판정
             agent.compare_accounts_max = compare_accounts_max
-        elif isinstance(agent, PayerAgent | RecorderAgent | VerifierAgent):
+        elif isinstance(agent, PayerAgent | RecorderAgent | VerifierAgent | AutopayRecorderAgent):
             agent.set_wave(wave)
         agents[spec.name] = agent
     # 교차 비교 짝(무신사 ↔ 29CM) — 소싱처 표의 cross_with 로 잇는다

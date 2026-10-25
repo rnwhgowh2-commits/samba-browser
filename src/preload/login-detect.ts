@@ -349,9 +349,20 @@ function buttonTextOf(el: HTMLElement): string {
     .trim()
 }
 
-// 소셜 로그인 버튼은 제출 대상이 아니다
+// 아이디·비밀번호가 아닌 다른 로그인 방식 버튼(패스키·QR·일회용 번호·휴대폰 번호) — 우리 자격 증명을 제출하는 버튼이 아니다.
+// 실기 2026-10-17: 네이버 로그인 폼의 첫 제출형 버튼이 "패스키 로그인"이라 이걸 눌러, 이 PC 에 등록된 다른 계정 패스키로 로그인됐다
+export const ALT_LOGIN_RE = /패스키|passkey|webauthn|qr\s?코드|qr.?code|일회용\s?번호|one.?time|이\s?번호로|security.?key|보안\s?키|생체|지문|face.?id/i
+
+// 검색 버튼(머리말 검색·스마트 서치) — 로그인 제출 대상이 아니다
+function isSearchButton(el: HTMLElement): boolean {
+  const text = buttonTextOf(el)
+  return /검색|서치|search/i.test(text) && !/로그인|login/i.test(text)
+}
+
+// 소셜 로그인·다른 로그인 방식 버튼은 제출 대상이 아니다
 function isSocialButton(el: HTMLElement): boolean {
-  return SOCIAL_RE.test(buttonTextOf(el))
+  const text = buttonTextOf(el)
+  return SOCIAL_RE.test(text) || ALT_LOGIN_RE.test(text)
 }
 
 // 로그인 낱말이 섞여도 제출이 아닌 버튼 — 아이디·비밀번호 찾기, 회원가입, 비회원, 로그인 상태 유지 등
@@ -367,7 +378,7 @@ function isFormLoginButton(el: HTMLElement): boolean {
   if (!isButtonish(el)) return false
   const text = buttonTextOf(el)
   if (!SUBMIT_TEXT_RE.test(text)) return false
-  return !NOT_SUBMIT_TEXT_RE.test(text) && !SOCIAL_RE.test(text)
+  return !NOT_SUBMIT_TEXT_RE.test(text) && !SOCIAL_RE.test(text) && !ALT_LOGIN_RE.test(text)
 }
 
 /**
@@ -392,10 +403,18 @@ export function findSubmit(
 ): number | undefined {
   const form = anchor ? formOf(anchor) : null
   if (form) {
+    // 로그인 글자가 있는 버튼을 먼저 고른다 — 페이지 전체를 감싼 폼은 머리말 검색 버튼('스마트 서치' 등)이 먼저 나온다
+    // (실기 2026-10-17: ABC마트 로그인이 검색 버튼을 눌러 검색창만 열리고 제출되지 않았다)
+    for (const el of registry) {
+      if (formOf(el) !== form) continue
+      if (!isSubmitLike(el) && !isButtonish(el)) continue
+      if (isSearchButton(el)) continue
+      if (isFormLoginButton(el)) return idOf(el)
+    }
     for (const el of registry) {
       if (formOf(el) !== form) continue
       if (!isSubmitLike(el)) continue
-      if (isSocialButton(el)) continue
+      if (isSocialButton(el) || isSearchButton(el)) continue
       return idOf(el)
     }
     // 폼에 제출 버튼이 없으면 같은 폼 안의 로그인 글자 버튼(type="button")을 쓴다 — 문서 전체로 넘어가면

@@ -11,6 +11,7 @@ import type {
 } from '../shared/snapshot'
 import type { CaptureTraceStage } from '../shared/vault'
 import { MAX_ELEMENTS } from './page-constants'
+import { scrollPage } from './page-scroll'
 import {
   isCloseLabel,
   isOverlay,
@@ -189,6 +190,10 @@ function labelOf(el: HTMLElement): string {
   if (aria) return aria.trim()
   const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()
   if (text) return text
+  // 카페24의 네이버 간편로그인은 텍스트·alt 없는 아이콘 앵커로 제공되기도 한다.
+  if (/^\s*MemberAction\.snsLogin\(\s*['"]naver['"]\s*,/.test(el.getAttribute('onclick') ?? '')) {
+    return '네이버로 로그인'
+  }
   // name 속성이 있으면 그 값을 그대로 노출하므로 placeholder 는 name 이 없을 때만 사용
   const name = el.getAttribute('name')
   if (!name) {
@@ -835,9 +840,44 @@ export function releaseTextFocus(next: HTMLElement): void {
   active.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: next }))
 }
 
+/**
+ * 네이티브 click() — SVG 요소(별점 아이콘 등)에는 click() 메서드가 없어 'el.click is not a function' 으로
+ * 클릭 도구가 통째로 실패했다(실기 2026-10-17 무신사 후기 별점). 없으면 같은 click 이벤트를 직접 보낸다
+ */
+function nativeClick(el: Element): void {
+  const fn = (el as Partial<HTMLElement>).click
+  if (typeof fn === 'function') {
+    fn.call(el)
+    return
+  }
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+}
+
+// 후기 등록은 화면 반응이 늦어도 재클릭하지 않는다. 같은 폼의 동시 호출도 먼저 막는다.
+const attemptedReviewSubmits = new WeakSet<Element>()
+
+function isReviewSubmit(el: Element): boolean {
+  const label = `${el.textContent ?? ''} ${el.getAttribute('aria-label') ?? ''}`
+  return /(?:리뷰|후기|상품평)[\s\S]*(?:등록|저장|제출|수정\s*완료)/.test(label)
+}
+
 export async function performClick(id: number): Promise<string> {
   const el = get(id)
   if (!el) return missingMessage(id)
+  const reviewTarget = el.closest('button, a') ?? el.closest('[role="button"]') ?? el
+  const reviewSubmit = isReviewSubmit(reviewTarget)
+  if (reviewSubmit) {
+    if (attemptedReviewSubmits.has(reviewTarget)) {
+      return 'refused: review submission already attempted; verify the written history before any further submission'
+    }
+    if (
+      (reviewTarget as HTMLButtonElement).disabled ||
+      reviewTarget.getAttribute('aria-disabled') === 'true'
+    ) {
+      return 'refused: review submission is disabled'
+    }
+    attemptedReviewSubmits.add(reviewTarget)
+  }
   // jsdom 등 일부 환경은 scrollIntoView 를 구현하지 않음
   el.scrollIntoView?.({ block: 'center' })
   const covered = coveredByNote(el)
@@ -852,11 +892,17 @@ export async function performClick(id: number): Promise<string> {
   fireMouseEvent(el, 'mousedown')
   fireMouseEvent(el, 'pointerup')
   fireMouseEvent(el, 'mouseup')
-  el.click()
+  nativeClick(el)
   const handled = watch.handled()
   watch.stop()
   if (handled) return withCoverNote('ok', covered)
   if (await waitForChange(el, before)) return withCoverNote('ok', covered)
+  if (reviewSubmit) {
+    return withCoverNote(
+      'ok: review submit clicked once; result unknown; verify the written history without clicking again',
+      covered
+    )
+  }
   // 2차 폴백 — 포커스 후 Enter. 키보드 활성화만 받는 버튼(무신사 '구매하기') 대응.
   // 포커스 자체가 기준값(active)을 바꾸므로 기준을 다시 찍고 비교한다
   el.focus?.()
@@ -898,7 +944,7 @@ export function pressOnce(id: number): string {
   fireMouseEvent(el, 'mousedown')
   fireMouseEvent(el, 'pointerup')
   fireMouseEvent(el, 'mouseup')
-  el.click()
+  nativeClick(el)
   return 'ok'
 }
 
@@ -1004,8 +1050,7 @@ export function performScroll(dir: 'up' | 'down', id?: number): string {
     el.scrollIntoView?.({ block: 'center' })
     return `ok (element ${id} is not inside a scrollable list; brought it into view)`
   }
-  window.scrollBy({ top: sign * window.innerHeight * 0.8 })
-  return 'ok'
+  return scrollPage(dir)
 }
 
 // --- 값 주입(SECRET 허용) ------------------------------------------------

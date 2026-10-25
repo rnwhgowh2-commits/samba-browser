@@ -21,6 +21,7 @@ from samba_agent.agents.contracts import OrderRef
 from samba_agent.failures import FailReason
 
 DEFAULT_TIMEOUT_S = 10.0
+AUTOPAY_REFRESH_TIMEOUT_S = 600.0
 API_PREFIX = '/api/v1/internal/harness'
 
 # HTTP 상태 → 실패 사유. 503 은 서버에 내부 토큰이 설정되지 않은 경우다(권한 문제로 센다)
@@ -379,6 +380,43 @@ class WaveClient:
         body = self._request('PUT', f'/orders/{order_no}/status', json=payload)
         return bool(body.get('changed')) if isinstance(body, dict) else False
 
+    # ---- 무신사 자동결제(사용자 지시 2026-10-06): 판정·입력은 삼바가 한다 ----
+    def autopay_queue(self, limit: int = 20) -> list[dict[str, object]]:
+        """자동결제 대상 주문과 작업 지시서(계정·쿠폰·결제예상액·매입가·허용 오차)."""
+        body = self._request('GET', '/autopay/queue', params={'limit': limit})
+        targets = body.get('targets') if isinstance(body, dict) else None
+        return [t for t in targets or [] if isinstance(t, dict)]
+
+    def autopay_refresh(self, order_no: str) -> dict[str, object]:
+        """삼바 로직으로 계정별 최저가를 새로 비교해 간단메모를 갱신하고 지시서를 받는다(더 싼 계정이면 그 계정)."""
+        # 삼바가 계정별 쿠폰·적립 재비교를 하느라 10초를 넘긴다(소싱처 호출 예산 대기 포함) — 이 호출만 길게 기다린다
+        return self._autopay_post(order_no, 'refresh', {}, timeout_s=AUTOPAY_REFRESH_TIMEOUT_S)
+
+    def autopay_verify(self, order_no: str, observed: dict[str, object]) -> dict[str, object]:
+        """결제 직전 판정(저장 없음). {pay, reasons, net_cost}."""
+        return self._autopay_post(order_no, 'verify', {'observed': observed})
+
+    def autopay_status(self, order_no: str, kind: str, text: str) -> dict[str, object]:
+        """삼바 주문 간단메모 밑 '자동결제' 칸에 사람이 알아야 할 상태를 한 줄로 적는다.
+
+        kind: action(확인 필요) · retry(자동 재시도 대기) · info(대기) · clear(지움). 개인정보를 넣지 않는다.
+        """
+        return self._autopay_post(order_no, 'status', {'kind': kind, 'text': text})
+
+    def autopay_result(self, order_no: str, receipt: dict[str, object]) -> dict[str, object]:
+        """결제 후 무신사 주문내역을 삼바에 입력하고 정상/비정상 판정을 받는다. {ok, saved, problems, cost, issue_tagged}."""
+        return self._autopay_post(order_no, 'result', {'receipt': receipt})
+
+    def _autopay_post(
+        self, order_no: str, action: str, body: dict[str, object], timeout_s: float | None = None
+    ) -> dict[str, object]:
+        out = self._request(
+            'POST', f'/autopay/{order_no}/{action}', json=body, timeout_s=timeout_s
+        )
+        if not isinstance(out, dict):
+            raise WaveError(FailReason.UNKNOWN, f'삼바웨이브 자동결제 응답 형식 오류: {action}')
+        return out
+
     def close(self) -> None:
         self._client.close()
 
@@ -395,14 +433,16 @@ class WaveClient:
             'content-type': 'application/json',
         }
 
-    def _request(self, method: str, path: str, **kwargs: object) -> object:
+    def _request(
+        self, method: str, path: str, timeout_s: float | None = None, **kwargs: object
+    ) -> object:
         """호출 1건. 연결 실패는 BRIDGE_DOWN, 상태 코드는 표대로 FailReason 으로 바꾼다."""
         try:
             r = self._client.request(
                 method,
                 f'{self._base}{path}',
                 headers=self._headers(),
-                timeout=self._timeout_s,
+                timeout=timeout_s if timeout_s is not None else self._timeout_s,
                 **kwargs,  # type: ignore[arg-type]
             )
         except httpx.TimeoutException as e:

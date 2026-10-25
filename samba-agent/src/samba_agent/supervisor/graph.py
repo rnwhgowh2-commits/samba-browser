@@ -17,7 +17,13 @@ from samba_agent.bridge.client import BridgeError
 from samba_agent.failures import FailReason
 from samba_agent.supervisor.approval import approval_request
 from samba_agent.supervisor.assign import build_assignment
-from samba_agent.supervisor.policy import KIND_OF_STAGE, STAGES, check_buyer, should_retry
+from samba_agent.supervisor.policy import (
+    KIND_OF_STAGE,
+    STAGES,
+    check_buyer,
+    check_buyer_autopay,
+    should_retry,
+)
 from samba_agent.supervisor.state import RunState, sanitize_result
 
 _log = logging.getLogger(__name__)
@@ -93,7 +99,11 @@ def _run_stage(
         except BridgeError as e:
             result = AgentResult(status='fail', reason=f'브릿지 오류: {e}', fail_reason=e.reason)
         if stage == 'buy':
-            result = check_buyer(result, state['order'].seller)
+            # 자동결제는 마진·결제 조건을 삼바가 판정한다(버전 2026-10-06) — 하네스 자체 마진 검사는 쓰지 않는다
+            if str(state.get('options', {}).get('autopay') or '') == '1':
+                result = check_buyer_autopay(result)
+            else:
+                result = check_buyer(result, state['order'].seller)
         if on_agent_result is not None:
             elapsed_ms = int((time.monotonic() - started) * 1000)
             try:

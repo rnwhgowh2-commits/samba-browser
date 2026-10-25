@@ -25,6 +25,11 @@ node keeper.mjs test-relogin --site ID       (시험) 로그아웃 → 복구 �
 | `naver_direct` | 간편로그인 창 주소를 탭에서 바로 연다 | ABC마트·그랜드스테이지(`a-rt.com`) |
 | `naver_click` | 로그인 페이지에서 "네이버" 버튼을 누른다(팝업 포함) | SSG, 롯데ON |
 | `vault_login` | 앱의 `login` 도구(키마스터 계정 입력) | 무신사 |
+| `kakao_click` | 카카오 버튼 → 지정한 기존 간편로그인 계정 선택 | OK캐쉬백 |
+
+나이키는 `vault_login`의 `followup: "nike"`로 이메일 제출 뒤 비밀번호 화면을 기다린다. 변경된 약관·이메일 인증은 자동 승인하지 않으며 해당 로그인 탭을 남긴다. OK캐쉬백도 카카오 세션이 만료됐거나 지정한 계정이 없으면 사람 확인으로 멈춘다. 두 사이트는 회원 화면의 실제 본문과 조작 요소까지 확인하며, 빈 화면·초기 HTML만으로 로그인 성공 처리하지 않는다.
+
+로그인 흐름과 브릿지 연결 회귀 검사: `node --test tools/session-keeper/site-login.test.mjs tools/session-keeper/bridge.test.mjs` (저장소 루트에서 실행).
 
 ## 사이트 추가
 `sites.json` 에 `id`, `home`, `markers`(in=로그인 표시, out=로그아웃 표시), `relogin` 을 넣는다.

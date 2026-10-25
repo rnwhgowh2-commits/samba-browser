@@ -203,17 +203,30 @@ class JobQueue:
             (version, _now(), job_id),
         )
 
-    def retry(self, job_id: int) -> Job:
-        """`이어서` — 실패·사람 넘김 건을 다시 큐에 넣는다. 상한을 넘으면 거부한다."""
+    def retry(
+        self,
+        job_id: int,
+        *,
+        max_attempts: int = MAX_ATTEMPTS,
+        options: dict[str, object] | None = None,
+    ) -> Job:
+        """`이어서` — 실패·사람 넘김 건을 다시 큐에 넣는다. 상한을 넘으면 거부한다.
+
+        ``options`` 를 주면 옵션도 새 값으로 바꾼다(자동결제 재시도가 삼바의 새 최저가 계정을 싣는다).
+        """
         row = self._db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
         if row is None:
             raise ValueError(f'없는 작업: {job_id}')
-        if row['attempts'] + 1 >= MAX_ATTEMPTS:
-            raise ValueError(f'재시도 상한({MAX_ATTEMPTS})에 닿았다: {row["order_no"]}')
+        if row['attempts'] + 1 >= max_attempts:
+            raise ValueError(f'재시도 상한({max_attempts})에 닿았다: {row["order_no"]}')
         self._db.execute(
-            "UPDATE jobs SET state='queued', attempts=attempts+1, error=NULL, updated_at=? "
-            'WHERE id=?',
-            (_now(), job_id),
+            "UPDATE jobs SET state='queued', attempts=attempts+1, error=NULL, "
+            'assignee_agent=NULL, step=NULL, options=COALESCE(?, options), updated_at=? WHERE id=?',
+            (
+                json.dumps(options, ensure_ascii=False) if options is not None else None,
+                _now(),
+                job_id,
+            ),
         )
         return self._job(self._db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
 

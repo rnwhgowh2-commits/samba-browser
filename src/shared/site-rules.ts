@@ -93,6 +93,7 @@ export const KNOWN_LOGIN_URLS: Record<string, string> = {
   'yes24.com': 'https://www.yes24.com/Templates/FTLogIn.aspx',
   'ohou.se': 'https://ohou.se/users/sign_in',
   'nike.com': 'https://www.nike.com/kr/login',
+  'lemouton.co.kr': 'https://www.lemouton.co.kr/member/login.html',
   'fashionplus.co.kr': 'https://www.fashionplus.co.kr/auth/login',
   // GS SHOP 은 WAF 가 봇 요청을 일괄 405 로 막아 응답으로 확인하지 못했다.
   // 틀려도 login 도구가 페이지 내 로그인 링크 클릭으로 되짚으므로 후보로만 둔다

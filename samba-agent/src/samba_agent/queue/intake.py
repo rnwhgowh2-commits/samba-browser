@@ -86,6 +86,7 @@ class Intake:
         poison_only: bool = False,
         all_sellers_sources: frozenset[str] = frozenset(),
         on_unfulfillable: Callable[[str, str], str | None] | None = None,
+        skip_autopay: bool = False,
     ) -> None:
         self._wave = wave
         self._queue = queue
@@ -103,6 +104,8 @@ class Intake:
         self._all_sellers = frozenset(x.upper() for x in all_sellers_sources)
         # 이행 불가 주문 처리(가격X·재고X 표시 + 취소요청) — (주문번호, 실패 사유)
         self._on_unfulfillable = on_unfulfillable
+        # 무신사 '자동결제' 주문은 자동결제 접수(autopay_intake)가 맡는다 — 같은 주문을 하네스 자체 로직으로 사지 않게 건너뛴다
+        self._skip_autopay = skip_autopay
         # 범위 밖 소싱처 미등록 주문 중 이미 연결을 시도한 주문(주기마다 되풀이하지 않는다)
         self._linked_only: set[str] = set()
         # 슬랙 `수집 중지` 가 세우는 깃발. 세워져 있으면 run_once 는 아무것도 하지 않는다
@@ -206,6 +209,8 @@ class Intake:
     def _in_scope(self, order: WaveOrder) -> bool:
         """수집 범위 안인가 — 소싱처 목록·포이즌 판매만(사용자 설정)."""
         if self._sources and str(order.source_site or '').upper() not in self._sources:
+            return False
+        if getattr(self, '_skip_autopay', False) and str(order.source_site or '').upper() == 'MUSINSA' and 'auto_pay' in order.flags:
             return False
         if self._poison_only and str(order.source_site or '').upper() not in self._all_sellers:
             from samba_agent.supervisor.policy import is_poison_seller
