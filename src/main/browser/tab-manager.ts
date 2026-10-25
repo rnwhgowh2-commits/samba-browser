@@ -82,7 +82,10 @@ const RESTORE_WAIT_MS = 45_000
 const DISCARD_PROBE_MS = 3000
 // 다시 연 페이지의 첫 화면을 기다리는 최대 시간과 그 확인 스크립트(두 프레임 지나면 끝)
 const FIRST_PAINT_WAIT_MS = 1500
-const FIRST_PAINT_JS = 'new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))'
+// 탭을 붙인 네이티브 화면이 준비된 뒤 다시 그린다(첫 프레임이 늦는 경우까지 두 번).
+const SHOWN_REPAINT_DELAYS_MS = [150, 1200]
+const FIRST_PAINT_JS =
+  'new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))'
 
 export interface Tab {
   id: string
@@ -290,6 +293,8 @@ export class TabManager {
   private tabs: Tab[] = []
   private popups = new PopupRegistry<BrowserWindow>()
   private activeId: string | null = null
+  // A→B→A로 빠르게 돌아와도 첫 A의 복구 예약이 새 A에 끼어들지 않게 한다.
+  private activationEpoch = 0
   // AI 가 switch_tab 으로 고른 팝업. 그 팝업이 닫히면 계산 단계에서 자동으로 무시된다
   private focusedPopupId: string | null = null
   // 자동화 대상 탭 — 사람이 이 창을 쓰는 중이라 자동화가 보이는 탭을 바꾸지 못했을 때, 자동화가 고른 탭을
@@ -1157,15 +1162,24 @@ export class TabManager {
   }
 
   /**
-   * 보이는 탭을 다시 그리게 한다(Ctrl+Alt+R · 화면 캡처가 멈췄을 때). 모든 탭 뷰를 떼었다 순서대로 다시
-   * 붙이고(activate 와 같은 순서), 크기를 흔들어 페이지 전체를 다시 칠하라고 요청한다(repaintView).
+   * 보이는 탭을 다시 그리게 한다(Ctrl+Alt+R · 화면 캡처가 멈췄을 때). 대상 뷰만 다시 붙이고,
+   * 크기를 흔들어 페이지 전체를 다시 칠하라고 요청한다(repaintView).
    * 자동화 대상 표식·방문 기록은 건드리지 않는다. 다시 그릴 탭이 없으면 false
    */
   repaintActive(reason: string): boolean {
     const tab = this.active()
     if (this.disposed || this.win.isDestroyed() || !tab || !isTabAlive(tab)) return false
     paintDiag('repaint', { reason, ...this.stackInfo() })
-    this.activate(tab.id, { repaint: true })
+    if (stackMismatch(this.stackIds(), this.activeId)) {
+      this.activate(tab.id, { repaint: true })
+    } else {
+      // 전체 탭을 재부착하면 복구 예약마다 뒤에서 작업 중인 수십 개 뷰도 다시 그린다.
+      // 대상만 같은 위치에 재부착해 위에 열린 확장 팝업의 순서도 보존한다.
+      const index = this.win.contentView.children.indexOf(tab.view)
+      this.win.contentView.removeChildView(tab.view)
+      this.win.contentView.addChildView(tab.view, index < 0 ? undefined : index)
+      this.applyBounds()
+    }
     this.repaintView(tab)
     paintDiag('repaint-done', { reason, ...this.stackInfo() })
     return true
@@ -1528,6 +1542,10 @@ export class TabManager {
     if (!repaint && ((isAutomation() && visibleAlive) || this.automationTabId === id)) {
       this.automationTabId = null
     }
+    const switched = this.activeId !== id
+    if (!repaint && switched) this.activationEpoch++
+    // 쉬느라 창에서 떼어 둔 레인 탭인가(sleepIdleLanes) — 아래에서 모든 뷰를 떼기 전에 본다
+    const sleptLane = !repaint && this.laneIds.has(id) && !this.win.contentView.children.includes(tab.view)
     // 탭 뷰를 다시 얹기 전에 알린다 — 위에 떠 있던 확장 팝업이 탭 뷰 아래로 묻히지 않게
     for (const cb of this.activatedListeners) cb()
     // 모든 탭 뷰를 창에서 제거(없으면 무시됨)한 뒤 뒤 탭은 맨 아래부터, 활성 탭은 맨 위에 다시 추가한다
@@ -1560,14 +1578,37 @@ export class TabManager {
     this.win.contentView.addChildView(tab.view)
     if (!repaint) this.noteVisit(tab.view.webContents.getURL())
     this.applyBounds()
-    if (wasBehind) this.repaintView(tab)
+    if (wasBehind || sleptLane) this.repaintView(tab)
+    // 쉬던 레인뿐 아니라 뒤 층에 붙어 있던 탭도 하얗게 남았다(2026-10-25 르무통 실기).
+    // 같은 이벤트에서 크기를 흔드는 것만으로는 안 풀리고 Ctrl+Alt+R로 뒤늦게 다시 붙이면 표시됐다.
+    // 모든 실제 전환에 같은 복구를 예약하되, 복구 자체는 다시 예약하지 않는다.
+    if (!repaint && switched) this.repaintSoon(id, this.activationEpoch)
     this.emit()
     paintDiag(repaint ? 'activate-repaint' : 'activate', {
       id: shortId(id),
       by,
       wasBehind,
+      ...(sleptLane ? { sleptLane } : {}),
       ...this.stackInfo()
     })
+  }
+
+  /** 보이는 탭이 된 id 를 조금 뒤에 두 번 다시 그린다(repaintActive) — 그사이 다른 탭으로 바뀌었으면 하지 않는다 */
+  private repaintSoon(id: string, epoch: number): void {
+    for (const ms of SHOWN_REPAINT_DELAYS_MS) {
+      setTimeout(() => {
+        if (
+          this.disposed ||
+          this.win.isDestroyed() ||
+          this.activeId !== id ||
+          this.activationEpoch !== epoch ||
+          this.gateHidden ||
+          this.frontDepth > 0
+        )
+          return
+        this.repaintActive('shown-tab')
+      }, ms)
+    }
   }
 
   /** 크기를 1px 줄였다 되돌리고 invalidate 로 다시 그리게 한다(하얗게 남은 뒤 층 출신 뷰를 깨운다) */
