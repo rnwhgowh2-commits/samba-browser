@@ -28,7 +28,7 @@ export const WINDOW_ID = 0
 /** 탭 관리자가 이 다리에 주는 것(테스트 대역으로 갈아 끼운다) */
 export interface ExtensionTabsProvider {
   /** 탭 목록(앞→뒤 순서) */
-  tabs(): Array<{ wc: WebContents; active: boolean; profile: string }>
+  tabs(): Array<{ wc: WebContents; active: boolean; profile: string; shown?: { url: string; title: string } }>
   /** 새 탭 — 만든 탭의 webContents */
   create(url: string, profile: string, active: boolean): WebContents | null
   /** webContents 로 탭 닫기 */
@@ -47,7 +47,15 @@ export function setExtensionTabsProvider(p: ExtensionTabsProvider | null): void 
 }
 
 /** webContents → 크롬 Tab(순수에 가깝게 — webContents 에서 읽기만) */
-export function toChromeTab(wc: WebContents, index: number, active: boolean): ChromeTab {
+/**
+ * shown — 메모리를 아끼려고 비워 둔 탭이면 원래 주소·제목(앱 탭 목록과 같게). 확장이 원래 사이트 주소로 탭을 찾을 수 있게 한다
+ */
+export function toChromeTab(
+  wc: WebContents,
+  index: number,
+  active: boolean,
+  shown?: { url: string; title: string }
+): ChromeTab {
   return {
     id: wc.id,
     index,
@@ -56,9 +64,9 @@ export function toChromeTab(wc: WebContents, index: number, active: boolean): Ch
     highlighted: active,
     pinned: false,
     incognito: false,
-    url: wc.getURL(),
-    title: wc.getTitle(),
-    status: wc.isLoading() ? 'loading' : 'complete'
+    url: shown?.url ?? wc.getURL(),
+    title: shown?.title ?? wc.getTitle(),
+    status: !shown && wc.isLoading() ? 'loading' : 'complete'
   }
 }
 
@@ -95,7 +103,7 @@ export function runTabsOp(op: string, raw: unknown, ses: Session, extensionId: s
   if (!provider) return null
   const p = provider
   const d = obj(raw)
-  const all = p.tabs().map((t, i) => ({ ...t, tab: toChromeTab(t.wc, i, t.active) }))
+  const all = p.tabs().map((t, i) => ({ ...t, tab: toChromeTab(t.wc, i, t.active, t.shown) }))
   const byId = (id: unknown): (typeof all)[number] | undefined =>
     typeof id === 'number' ? all.find((t) => t.wc.id === id) : undefined
   const activeOne = all.find((t) => t.active)

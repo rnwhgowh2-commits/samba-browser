@@ -1804,6 +1804,13 @@ overlays left: ${after.length}${kept}`
           const target = targetList().find((t) => t.id === id)
           if (!target) return `not found: no tab or popup with id ${id}`
           focusTargetOf(ctx.tabs, id)
+          // 메모리를 아끼려고 비워 둔 탭이면 원래 페이지가 다시 뜰 때까지 기다린다 — 스크립트가 곧바로 page.* 를 쓴다
+          // (runner 는 도구 호출 앞에서만 기다리므로 스크립트 안의 전환은 여기서 챙긴다). 없는 대역은 건너뛴다
+          const tm = ctx.tabs as Partial<TabManager>
+          tm.touchLane?.(id)
+          if (tm.whenRestored && !(await tm.whenRestored(id))) {
+            return `error: tab ${id} is being reloaded after memory saving — retry shortly`
+          }
           return `ok: now working in ${target.kind} ${id}`
         }
         case 'tabs.close': {

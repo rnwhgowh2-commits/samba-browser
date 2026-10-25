@@ -38,6 +38,8 @@ import type { SiteScriptStore } from './site-scripts-store'
 import { buildScriptsBlock } from '../../shared/site-scripts'
 import { createTextDeduper } from './dedupe'
 import { labelLaneTargets, laneTabs, newLaneState, type LaneState } from './lane-tabs'
+import { agentTargetOf } from './target'
+import { toolNeedsPage } from '../browser/behind-views'
 import {
   watchHandoff,
   HANDOFF_TIMEOUT_MS,
@@ -945,11 +947,8 @@ ${CODEX_NO_IMAGE_NOTE}`
       })
     // 키패드 입력 기록은 브릿지 세션(요청 1건)을 넘어 공유한다 — 같은 결제창에 두 번 넣지 않는다
     const bridgeCtx = { ...baseCtx, keypadEntered: this.bridgeKeypadEntered }
-    const server = createSambaTools(
-      laneState
-        ? { ...bridgeCtx, tabs: laneTabs(this.tabs, laneState) }
-        : { ...bridgeCtx, tabs: labelLaneTargets(this.tabs, this.lanes) }
-    )
+    const tabsView = laneState ? laneTabs(this.tabs, laneState) : labelLaneTargets(this.tabs, this.lanes)
+    const server = createSambaTools({ ...bridgeCtx, tabs: tabsView })
     const tools = extractSdkTools(server).filter((t) => t.name !== 'done')
     // 브릿지 세션이 열려 있는 동안은 금고 자동 잠금을 보류한다(run() 과 같은 패턴). 두 번 풀려도 안전하다
     let releaseVaultHold: (() => void) | null = this.vault?.holdAutoLock('bridge session') ?? null
@@ -958,8 +957,28 @@ ${CODEX_NO_IMAGE_NOTE}`
       call: async (name, args) => {
         const t = tools.find((x) => x.name === name)
         if (!t) throw new Error(`unknown tool: ${name}`)
-        const r = await t.handler(args, {})
-        return r.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n')
+        // 레인 호출이 도는 동안 그 레인 탭은 쉬게(뒤 층에서 떼게) 하지 않는다 — 1분 넘는 호출(문자 인증 대기 등).
+        // 페이지를 쓰지 않는 도구(탭 목록 등)는 붙잡지 않는다 — 세션 관리자가 회차마다 부르는 list_tabs 가 레인 탭 전체의
+        // 사용 시각을 늘 새로 고쳐 영영 비우지 못했다(Codex 재검토). holdLanes 가 없는 대역(테스트 스텁)은 건너뛴다
+        const releaseLanes =
+          laneState && toolNeedsPage(name)
+            ? ((this.tabs as Partial<TabManager>).holdLanes?.(laneState.owned) ?? null)
+            : null
+        try {
+          // 페이지를 비워 둔 탭(쉬는 레인 탭)이 도구 대상이면 원래 페이지가 다시 뜰 때까지 기다린다. 페이지를 쓰지 않는
+          // 도구(탭 목록·닫기 등)는 다시 열지 않는다. whenRestored 가 없는 대역(테스트 스텁)은 건너뛴다
+          const whenRestored = (this.tabs as Partial<TabManager>).whenRestored
+          if (whenRestored && toolNeedsPage(name)) {
+            const target = agentTargetOf(tabsView)
+            if (target && !(await whenRestored.call(this.tabs, target.id))) {
+              throw new Error('메모리를 아끼려고 비워 둔 탭을 다시 여는 중입니다(45초 안에 못 엶). 잠시 뒤 다시 시도하세요.')
+            }
+          }
+          const r = await t.handler(args, {})
+          return r.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n')
+        } finally {
+          releaseLanes?.()
+        }
       },
       dispose: () => {
         if (laneState) {
