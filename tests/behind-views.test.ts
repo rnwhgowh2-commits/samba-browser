@@ -6,6 +6,7 @@ import {
   discardableProbe,
   discardableUrl,
   hotLaneIds,
+  LANE_DISCARD_ENABLED,
   LANE_IDLE_MS,
   splitBehind,
   stackOrder,
@@ -128,6 +129,10 @@ describe('쉬는 레인 탭 페이지 비우기 규칙', () => {
     expect(discardableProbe({ activated: false, dirty: true })).toBe(false)
     expect(discardableProbe({ timeout: true })).toBe(false)
     expect(discardableProbe(null)).toBe(false)
+  })
+
+  it('페이지 비우기는 꺼져 있다 — 비운 탭을 누를 때마다 다시 불러와 느렸다(2026-10-25 사장님 지시)', () => {
+    expect(LANE_DISCARD_ENABLED).toBe(false)
   })
 
   it('비우는 기준 시간은 떼는 기준 시간보다 길다(먼저 떼고, 한참 더 안 쓰면 비운다)', () => {

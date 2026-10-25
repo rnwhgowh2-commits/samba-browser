@@ -84,6 +84,13 @@ export function hotLaneIds(input: {
  */
 export const DISCARD_IDLE_MS = 10 * 60_000
 
+/**
+ * 쉬는 레인 탭 페이지 비우기를 켤지. 꺼 둔다(2026-10-25 사장님 지시) — 비운 계정 탭을 누를 때마다 원래 페이지를 처음부터
+ * 다시 불러와 탭 전환이 느렸다. 메모리가 다시 늘어도 된다고 했다. 뒤 층에서 떼기(CPU 절약, LANE_IDLE_MS)는 그대로 둔다.
+ * 꺼도 이미 비워 둔 탭이 있으면 다시 쓸 때 복구는 그대로 한다
+ */
+export const LANE_DISCARD_ENABLED = false
+
 /** 비운 탭이 보여 주는 가벼운 페이지(출처가 달라 옛 렌더러가 끝난다). 다시 쓰면 곧바로 원래 주소로 돌아간다 */
 export const DISCARDED_PAGE_URL =
   'data:text/html;charset=utf-8,' +

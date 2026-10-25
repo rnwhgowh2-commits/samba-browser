@@ -62,6 +62,7 @@ import {
   discardableProbe,
   discardableUrl,
   hotLaneIds,
+  LANE_DISCARD_ENABLED,
   PAGE_KEEP_PROBE_JS,
   splitBehind,
   stackOrder
@@ -1324,6 +1325,7 @@ export class TabManager {
    * 페이지를 누른 적 없고 입력하다 만 칸 없음(discardableProbe — 이동 때 '떠나시겠습니까' 창이 뜨지 않게)
    */
   private discardIdleLane(): void {
+    if (!LANE_DISCARD_ENABLED) return
     if (this.disposed || this.win.isDestroyed() || this.frontDepth > 0 || this.discarding) return
     const now = Date.now()
     const hot = this.hotLanes()
